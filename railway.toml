@@ -1,0 +1,5 @@
+[build]
+builder = "nixpacks"
+
+[build.config]
+python_version = "3.11"
