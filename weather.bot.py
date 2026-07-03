@@ -66,29 +66,29 @@ CONDITION_MAP = {
 
 # ========== مؤشر UV ==========
 UV_LEVELS = {
-    0: ("⚪ منعدم", "لا حاجة للحماية"),
-    1: ("🟢 منخفض", "لا حاجة للحماية"),
-    2: ("🟢 منخفض", "لا حاجة للحماية"),
-    3: ("🟡 متوسط", "استخدم واقي شمس SPF 15+"),
-    4: ("🟡 متوسط", "استخدم واقي شمس SPF 15+"),
-    5: ("🟡 متوسط", "استخدم واقي شمس SPF 30+"),
-    6: ("🟠 عالي", "تجنب الشمس 10ص-4م"),
-    7: ("🟠 عالي", "تجنب الشمس 10ص-4م"),
-    8: ("🔴 عالي جداً", "حماية قصوى ضرورية"),
-    9: ("🔴 عالي جداً", "حماية قصوى ضرورية"),
-    10: ("🟣 خطير", "لا تخرج إلا للضرورة"),
-    11: ("🟣 خطير جداً", "لا تخرج مطلقاً"),
+    0: ("⚪", "منعدم", "لا حاجة للحماية"),
+    1: ("🟢", "منخفض", "لا حاجة للحماية"),
+    2: ("🟢", "منخفض", "لا حاجة للحماية"),
+    3: ("🟡", "متوسط", "واقي شمس SPF 15+"),
+    4: ("🟡", "متوسط", "واقي شمس SPF 15+"),
+    5: ("🟡", "متوسط", "واقي شمس SPF 30+"),
+    6: ("🟠", "عالي", "تجنب الشمس 10ص-4م"),
+    7: ("🟠", "عالي", "تجنب الشمس 10ص-4م"),
+    8: ("🔴", "عالي جداً", "حماية قصوى ضرورية"),
+    9: ("🔴", "عالي جداً", "حماية قصوى ضرورية"),
+    10: ("🟣", "خطير", "لا تخرج للضرورة"),
+    11: ("🟣", "خطير جداً", "لا تخرج مطلقاً"),
 }
 
 # ========== جودة الهواء ==========
 def get_aqi_info(pm25):
-    if pm25 <= 12: return "🟢", "ممتاز", "هواء نقي جداً"
+    if pm25 <= 12: return "🟢", "ممتاز", "هواء نقي وصحي"
     elif pm25 <= 35: return "🟡", "جيد", "جودة هواء مقبولة"
     elif pm25 <= 55: return "🟠", "معتدل", "قد يؤثر على الحساسين"
     elif pm25 <= 150: return "🔴", "غير صحي", "تجنب التعرض الطويل"
-    else: return "🟣", "خطير", "تجنب الخروج"
+    else: return "🟣", "خطير", "تجنب الخروج نهائياً"
 
-# ========== تصحيح أسماء المدن اليمنية (إحداثيات دقيقة) ==========
+# ========== تصحيح أسماء المدن اليمنية ==========
 YEMEN_COORDS = {
     "صنعاء": ("15.3694,44.1910", "صنعاء، اليمن"),
     "عدن": ("12.7855,45.0187", "عدن، اليمن"),
@@ -108,10 +108,18 @@ YEMEN_COORDS = {
 def translate_condition(condition: str) -> str:
     return CONDITION_MAP.get(condition, f"🌡️ {condition}")
 
+def get_temp_bar(temp: float) -> str:
+    """شريط حرارة مرئي"""
+    if temp <= 0: return "🔵" * 5
+    elif temp <= 10: return "🔵" * 4 + "⚪"
+    elif temp <= 20: return "🟢" * 3 + "⚪" * 2
+    elif temp <= 30: return "🟡" * 3 + "⚪" * 2
+    elif temp <= 40: return "🟠" * 4 + "⚪"
+    else: return "🔴" * 5
+
 def get_weather_advice(temp: float, rain: int, uv: float, wind: float) -> str:
     tips = []
     
-    # نصائح المطر
     if rain >= 80:
         tips.append("🌂 أمطار شبه مؤكدة - لا تنسَ المظلة")
     elif rain >= 50:
@@ -119,15 +127,12 @@ def get_weather_advice(temp: float, rain: int, uv: float, wind: float) -> str:
     elif rain >= 30:
         tips.append("🌦️ فرصة أمطار - كن مستعداً")
     
-    # نصائح الحرارة
     if temp >= 45:
         tips.append("🔥 حرارة خطيرة - تجنب الخروج نهاراً")
     elif temp >= 40:
         tips.append("☀️ حرارة شديدة - اشرب ماء بكثرة")
     elif temp >= 35:
         tips.append("🌡️ حار - قلل التعرض للشمس")
-    elif temp >= 30:
-        tips.append("🌤️ دافئ - حافظ على الترطيب")
     elif temp >= 20:
         tips.append("🌸 جو معتدل - مثالي للخروج")
     elif temp >= 10:
@@ -135,21 +140,35 @@ def get_weather_advice(temp: float, rain: int, uv: float, wind: float) -> str:
     elif temp >= 0:
         tips.append("🥶 بارد - ارتدِ ملابس دافئة")
     else:
-        tips.append("❄️ شديد البرودة - حماية كاملة ضرورية")
+        tips.append("❄️ شديد البرودة - حماية كاملة")
     
-    # نصائح إضافية
-    if uv >= 8:
-        tips.append("🧴 واقي شمس ضروري جداً")
-    if wind >= 40:
-        tips.append("💨 رياح قوية - انتبه")
-    if temp >= 20 and rain < 30 and wind < 25:
-        tips.append("🏃 ظروف ممتازة للرياضة")
+    if uv >= 8: tips.append("🧴 واقي شمس ضروري جداً")
+    if wind >= 40: tips.append("💨 رياح قوية - انتبه")
+    if temp >= 20 and rain < 30 and wind < 25: tips.append("🏃 ظروف ممتازة للرياضة")
     
     return "\n".join(f"• {tip}" for tip in tips)
 
+def get_weather_icon(code: int, is_day: bool) -> str:
+    """أيقونة طقس كبيرة حسب الوقت"""
+    if code == 1000:
+        return "☀️" if is_day else "🌙"
+    elif code in [1003, 1006, 1009]:
+        return "🌤️" if is_day else "☁️"
+    elif code in [1063, 1150, 1153, 1180, 1183, 1186, 1189, 1192, 1195, 1240, 1243, 1246]:
+        return "🌧️"
+    elif code in [1087, 1273, 1276, 1279, 1282]:
+        return "⛈️"
+    elif code in [1066, 1114, 1210, 1213, 1216, 1219, 1222, 1225, 1255, 1258]:
+        return "🌨️"
+    elif code in [1030, 1135, 1147]:
+        return "🌫️"
+    elif code == 1069:
+        return "🌨️"
+    else:
+        return "🌡️"
+
 # ========== دوال جلب البيانات ==========
 async def fetch_weather(city: str) -> dict | None:
-    # التحقق من المدن اليمنية أولاً
     if city in YEMEN_COORDS:
         search_query = YEMEN_COORDS[city][0]
     else:
@@ -157,7 +176,6 @@ async def fetch_weather(city: str) -> dict | None:
     
     async with aiohttp.ClientSession() as session:
         try:
-            # جلب الطقس الحالي مع جودة الهواء
             params = {"key": API_KEY, "q": search_query, "aqi": "yes", "lang": "ar"}
             async with session.get(f"{BASE_URL}/current.json", params=params, timeout=10) as resp:
                 if resp.status == 200:
@@ -165,7 +183,6 @@ async def fetch_weather(city: str) -> dict | None:
                 else:
                     return None
             
-            # جلب التوقعات
             params2 = {"key": API_KEY, "q": search_query, "days": 3, "aqi": "yes", "lang": "ar"}
             async with session.get(f"{BASE_URL}/forecast.json", params=params2, timeout=10) as resp:
                 if resp.status == 200:
@@ -173,7 +190,6 @@ async def fetch_weather(city: str) -> dict | None:
                 else:
                     forecast_data = None
             
-            # تصحيح اسم المدينة لليمنية
             if city in YEMEN_COORDS:
                 current_data["location"]["name"] = city
                 current_data["location"]["country"] = "اليمن"
@@ -205,7 +221,7 @@ async def fetch_hourly(city: str) -> dict | None:
         except:
             return None
 
-# ========== تنسيق الرسائل ==========
+# ========== تنسيق الرسائل - تصميم جديد ==========
 def format_current_weather(data: dict) -> tuple:
     c = data["current"]["current"]
     f = data["forecast"]["forecast"]["forecastday"][0]
@@ -219,63 +235,90 @@ def format_current_weather(data: dict) -> tuple:
     wind = float(c["wind_kph"])
     uv = float(c.get("uv", 0))
     rain_chance = f["day"]["daily_chance_of_rain"]
+    is_day = c.get("is_day", 1) == 1
+    
+    # أيقونة كبيرة
+    big_icon = get_weather_icon(c["condition"]["code"], is_day)
+    
+    # شريط الحرارة
+    temp_bar = get_temp_bar(temp)
     
     # جودة الهواء
-    aqi = c.get("air_quality", {})
     aqi_text = ""
+    aqi = c.get("air_quality", {})
     if aqi and aqi.get("pm2_5", 0) > 0:
         pm25 = aqi["pm2_5"]
         emoji, level, desc = get_aqi_info(pm25)
-        aqi_text = f"\n🏭 *جودة الهواء:* {emoji} `{level}` - {desc}\n   PM2.5: `{pm25:.1f}` µg/m³"
+        aqi_text = f"{emoji} *جودة الهواء:* `{level}` - {desc}\n"
     
     # مؤشر UV
     uv_int = int(uv)
-    uv_emoji, uv_level = UV_LEVELS.get(uv_int, ("⚪", "غير معروف"))[:2]
+    uv_emoji, uv_level, uv_advice = UV_LEVELS.get(uv_int, ("⚪", "غير معروف", ""))
     
-    # اتجاه الرياح بالعربي
+    # اتجاه الرياح
     wind_dir_ar = {
-        "N": "شمال", "S": "جنوب", "E": "شرق", "W": "غرب",
-        "NE": "شمال شرق", "NW": "شمال غرب", "SE": "جنوب شرق", "SW": "جنوب غرب",
-        "NNE": "شمال شمال شرق", "NNW": "شمال شمال غرب",
-        "ENE": "شرق شمال شرق", "ESE": "شرق جنوب شرق",
-        "SSE": "جنوب جنوب شرق", "SSW": "جنوب جنوب غرب",
-        "WSW": "غرب جنوب غرب", "WNW": "غرب شمال غرب"
+        "N": "⬆️ شمال", "S": "⬇️ جنوب", "E": "➡️ شرق", "W": "⬅️ غرب",
+        "NE": "↗️ شمال شرق", "NW": "↖️ شمال غرب", "SE": "↘️ جنوب شرق", "SW": "↙️ جنوب غرب",
     }
     wind_dir = wind_dir_ar.get(c.get("wind_dir", ""), c.get("wind_dir", ""))
     
     # النصائح
     advice = get_weather_advice(temp, rain_chance, uv, wind)
     
+    # الوقت
+    current_time = datetime.now().strftime('%I:%M %p')
+    day_name = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"][datetime.now().weekday()]
+    
     msg = f"""
-🏙️ *{location['name'].upper()}* | {location['country']}
-🕐 *{datetime.now().strftime('%I:%M %p')}*
+╭━━━━━━━━━━━━━━━━━━━━━━╮
+┃  {big_icon} *{location['name'].upper()}*
+┃  📍 {location['country']}
+┃  📅 {day_name} | 🕐 {current_time}
+╰━━━━━━━━━━━━━━━━━━━━━━╯
 
-{condition}
-🌡️ *الحرارة:* `{temp:.1f}°C`
-🤔 *المحسوسة:* `{feels_like:.1f}°C`
-💧 *الرطوبة:* `{humidity}%`
-💨 *الرياح:* `{wind:.0f} كم/س` {wind_dir}
+✨ *الحالة:* {condition}
 
-📊 *إحصائيات اليوم:*
-⬆️ العظمى: `{f['day']['maxtemp_c']:.1f}°C`
-⬇️ الصغرى: `{f['day']['mintemp_c']:.1f}°C`
-🌧️ فرصة الأمطار: `{rain_chance}%`
-☀️ مؤشر UV: {uv_emoji} `{uv:.0f}` ({uv_level})
-{aqi_text}
+🌡️ *درجة الحرارة:*
+{temp_bar}
+┣ 📊 *الحالية:* `{temp:.1f}°C`
+┣ 🤔 *المحسوسة:* `{feels_like:.1f}°C`
+┣ ⬆️ *العظمى:* `{f['day']['maxtemp_c']:.1f}°C`
+┗ ⬇️ *الصغرى:* `{f['day']['mintemp_c']:.1f}°C`
 
-🌅 *الشروق:* `{astro['sunrise']}`
-🌇 *الغروب:* `{astro['sunset']}`
-🌙 *طول النهار:* `{f['day'].get('sun_hours', '--')} ساعة`
+╭───────── 📊 *تفاصيل* ─────────╮
+┃ 💧 الرطوبة: `{humidity}%`
+┃ 💨 الرياح: `{wind:.0f} كم/س` {wind_dir}
+┃ 🌧️ فرصة الأمطار: `{rain_chance}%`
+┃ ☀️ مؤشر UV: {uv_emoji} `{uv:.0f}` ({uv_level})
+╰──────────────────────────────╯
 
-💡 *نصائح اليوم:*
+╭─────── 🏭 *جودة الهواء* ───────╮
+┃ {aqi_text if aqi_text else '🟢 *جودة الهواء:* `ممتاز` - هواء نقي وصحي'}
+╰──────────────────────────────╯
+
+╭─────── 🌅 *الشمس* ───────╮
+┃ 🌅 الشروق: `{astro['sunrise']}`
+┃ 🌇 الغروب: `{astro['sunset']}`
+╰──────────────────────────╯
+
+╭─────── 💡 *نصائح* ───────╮
 {advice}
+╰──────────────────────────╯
+
+🤖 *د/ عاصم النجار*
 """
     return msg, temp, rain_chance
 
 def format_forecast(data: dict) -> str:
     location = data["forecast"]["location"]
     days = data["forecast"]["forecast"]["forecastday"]
-    msg = f"📅 *توقعات {location['name'].upper()}* | 3 أيام\n\n"
+    msg = f"""
+╭━━━━━━━━━━━━━━━━━━━━━━╮
+┃  📅 *توقعات {location['name'].upper()}*
+┃  3 أيام قادمة
+╰━━━━━━━━━━━━━━━━━━━━━━╯
+
+"""
     days_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
     
     for day in days:
@@ -286,13 +329,17 @@ def format_forecast(data: dict) -> str:
         uv = d.get("uv", 0)
         uv_emoji = UV_LEVELS.get(int(uv), ("⚪",))[0]
         
-        msg += f"*{day_name}* | {date.strftime('%d/%m')}\n"
-        msg += f"{condition}\n"
-        msg += f"🌡️ `{d['maxtemp_c']:.1f}°` / `{d['mintemp_c']:.1f}°`"
-        msg += f" | 💧 `{d['avghumidity']}%`"
-        msg += f" | 🌧️ `{d['daily_chance_of_rain']}%`"
-        msg += f" | {uv_emoji} `{uv:.0f}`\n\n"
+        msg += f"""
+┏━━ *{day_name}* | {date.strftime('%d/%m')} ━━┓
+┃ ✨ {condition}
+┃ 🌡️ `{d['maxtemp_c']:.1f}°` / `{d['mintemp_c']:.1f}°`
+┃ 💧 رطوبة: `{d['avghumidity']}%`
+┃ 🌧️ أمطار: `{d['daily_chance_of_rain']}%`
+┃ ☀️ UV: {uv_emoji} `{uv:.0f}`
+┗━━━━━━━━━━━━━━━━━━━━━━━━┛
+"""
     
+    msg += "\n🤖 *د/ عاصم النجار*"
     return msg
 
 def format_hourly(data: dict) -> str:
@@ -300,17 +347,26 @@ def format_hourly(data: dict) -> str:
     hours = data["forecast"]["forecastday"][0]["hour"]
     now = datetime.now()
     
-    msg = f"⏰ *طقس {location['name'].upper()}* | الساعات القادمة\n\n"
+    msg = f"""
+╭━━━━━━━━━━━━━━━━━━━━━━╮
+┃  ⏰ *طقس {location['name'].upper()}*
+┃  الساعات القادمة
+╰━━━━━━━━━━━━━━━━━━━━━━╯
+
+"""
     
     count = 0
     for hour in hours:
         h_time = datetime.strptime(hour["time"], "%Y-%m-%d %H:%M")
         if h_time >= now and count < 8:
             condition = translate_condition(hour["condition"]["text"])
-            msg += f"`{h_time.strftime('%H:%M')}` | {condition}\n"
-            msg += f"🌡️ `{hour['temp_c']:.1f}°` | 💧 `{hour['humidity']}%` | 🌧️ `{hour['chance_of_rain']}%`\n\n"
+            temp = hour['temp_c']
+            temp_icon = "🔥" if temp > 35 else "☀️" if temp > 25 else "🌤️" if temp > 15 else "❄️"
+            
+            msg += f"┃ `{h_time.strftime('%H:%M')}` {temp_icon} `{temp:.1f}°` | {condition} | 💧`{hour['humidity']}%`\n"
             count += 1
     
+    msg += f"\n🤖 *د/ عاصم النجار*"
     return msg
 
 def format_compare(data1: dict, data2: dict) -> str:
@@ -320,50 +376,44 @@ def format_compare(data1: dict, data2: dict) -> str:
     n2 = data2["current"]["location"]["name"]
     
     return f"""
-⚖️ *مقارنة الطقس*
+╭━━━━━━━━━━━━━━━━━━━━━━╮
+┃  ⚖️ *مقارنة الطقس*
+╰━━━━━━━━━━━━━━━━━━━━━━╯
 
-|  | 🏙️ *{n1}* | 🏙️ *{n2}* |
-|------|------|------|
-| الحالة | {translate_condition(c1['condition']['text'])} | {translate_condition(c2['condition']['text'])} |
-| 🌡️ الحرارة | `{c1['temp_c']:.1f}°C` | `{c2['temp_c']:.1f}°C` |
-| 🤔 المحسوسة | `{c1['feelslike_c']:.1f}°C` | `{c2['feelslike_c']:.1f}°C` |
-| 💧 الرطوبة | `{c1['humidity']}%` | `{c2['humidity']}%` |
-| 💨 الرياح | `{c1['wind_kph']:.0f} كم/س` | `{c2['wind_kph']:.0f} كم/س` |
-| ☀️ UV | `{c1.get('uv', '--')}` | `{c2.get('uv', '--')}` |
+┏━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┓
+┃          ┃ 🏙️ *{n1[:8]}* ┃ 🏙️ *{n2[:8]}* ┃
+┣━━━━━━━━━━╋━━━━━━━━━━╋━━━━━━━━━━┫
+┃ ✨ الحالة ┃ {translate_condition(c1['condition']['text'])[:12]} ┃ {translate_condition(c2['condition']['text'])[:12]} ┃
+┃ 🌡️ الحرارة ┃ `{c1['temp_c']:.1f}°C` ┃ `{c2['temp_c']:.1f}°C` ┃
+┃ 🤔 محسوسة ┃ `{c1['feelslike_c']:.1f}°C` ┃ `{c2['feelslike_c']:.1f}°C` ┃
+┃ 💧 رطوبة ┃ `{c1['humidity']}%` ┃ `{c2['humidity']}%` ┃
+┃ 💨 رياح ┃ `{c1['wind_kph']:.0f}` ┃ `{c2['wind_kph']:.0f}` ┃
+┗━━━━━━━━━━┻━━━━━━━━━━┻━━━━━━━━━━┛
+
+🤖 *د/ عاصم النجار*
 """
 
 # ========== أوامر البوت ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🇸🇦 مدن السعودية", callback_data="sa")],
-        [InlineKeyboardButton("🇾🇪 مدن اليمن", callback_data="yemen")],
-        [InlineKeyboardButton("🌍 مدن عربية", callback_data="arab")],
-        [InlineKeyboardButton("🌎 مدن عالمية", callback_data="world")],
-        [InlineKeyboardButton("⭐ مدني المفضلة", callback_data="fav_list")],
-        [InlineKeyboardButton("⚖️ مقارنة مدن", callback_data="compare_start")],
+        [InlineKeyboardButton("🇸🇦 السعودية", callback_data="sa"), InlineKeyboardButton("🇾🇪 اليمن", callback_data="yemen")],
+        [InlineKeyboardButton("🌍 عربية", callback_data="arab"), InlineKeyboardButton("🌎 عالمية", callback_data="world")],
+        [InlineKeyboardButton("⭐ المفضلة", callback_data="fav_list"), InlineKeyboardButton("⚖️ مقارنة", callback_data="compare_start")],
         [InlineKeyboardButton("📋 أوامر متقدمة", callback_data="advanced")]
     ]
     await update.message.reply_text(
-        "🌤️ *مرحباً بك في بوت الطقس الشامل!*\n\n"
-        "📌 *ماذا يقدم لك البوت؟*\n"
+        "╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
+        "┃  🌤️ *بوت الطقس الشامل*\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        "📌 *المميزات:*\n"
         "• 🏙️ طقس دقيق لجميع مدن العالم\n"
-        "• 📅 توقعات 3 أيام قادمة\n"
-        "• ⏰ توقعات كل ساعة\n"
-        "• ☀️ مؤشر الأشعة فوق البنفسجية\n"
-        "• 🏭 جودة الهواء ومستوى التلوث\n"
+        "• 📅 توقعات 3 أيام\n"
+        "• ⏰ توقعات الساعة\n"
+        "• ☀️ مؤشر UV وجودة الهواء\n"
         "• ⚖️ مقارنة بين مدينتين\n"
-        "• ⭐ حفظ المدن المفضلة\n"
-        "• 💡 نصائح ذكية يومية\n\n"
-        "🔍 *طريقة الاستخدام:*\n"
-        "• اكتب اسم مدينتك مباشرة\n"
-        "• استخدم الأزرار للتنقل السريع\n\n"
-        "📋 *أوامر سريعة:*\n"
-        "`/hourly المدينة` - طقس بالساعة\n"
-        "`/compare` - مقارنة مدينتين\n"
-        "`/addfav المدينة` - إضافة مفضلة\n"
-        "`/delfav المدينة` - حذف مفضلة\n"
-        "`/fav` - عرض المفضلة\n\n"
-        "🤖 *تم تطوير هذا البوت بواسطة:*\n"
+        "• ⭐ حفظ المفضلة\n"
+        "• 💡 نصائح ذكية\n\n"
+        "🔍 *اكتب اسم مدينتك مباشرة*\n\n"
         "👨‍⚕️ *د/ عاصم النجار*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
@@ -371,11 +421,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def advanced_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📋 *أوامر متقدمة:*\n\n"
-        "`/hourly الرياض` - طقس كل ساعة\n"
+        "╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
+        "┃  📋 *أوامر متقدمة*\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        "`/hourly المدينة` - طقس كل ساعة\n"
         "`/compare` - مقارنة مدينتين\n"
-        "`/addfav مكة` - إضافة للمفضلة\n"
-        "`/delfav مكة` - حذف من المفضلة\n"
+        "`/addfav المدينة` - إضافة مفضلة\n"
+        "`/delfav المدينة` - حذف مفضلة\n"
         "`/fav` - عرض المفضلة",
         parse_mode='Markdown'
     )
@@ -476,7 +528,10 @@ async def show_fav(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def compare_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚖️ *مقارنة مدينتين*\n\nأرسل اسم *المدينة الأولى:*",
+        "╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
+        "┃  ⚖️ *مقارنة مدينتين*\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        "أرسل اسم *المدينة الأولى:*",
         parse_mode='Markdown'
     )
     return COMPARE_CITY1
@@ -553,7 +608,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(query.from_user.id)
         favs = load_favorites()
         if user_id not in favs or not favs[user_id]:
-            await query.edit_message_text("⭐ لا توجد مدن مفضلة\nاستخدم `/addfav المدينة` للإضافة", parse_mode='Markdown')
+            await query.edit_message_text("⭐ لا توجد مدن مفضلة", parse_mode='Markdown')
         else:
             keyboard = []
             for city in favs[user_id]:
@@ -563,11 +618,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "advanced":
         await query.edit_message_text(
-            "📋 *أوامر متقدمة:*\n\n"
-            "`/hourly الرياض` - طقس كل ساعة\n"
+            "╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
+            "┃  📋 *أوامر متقدمة*\n"
+            "╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+            "`/hourly المدينة` - طقس كل ساعة\n"
             "`/compare` - مقارنة مدينتين\n"
-            "`/addfav مكة` - إضافة للمفضلة\n"
-            "`/delfav مكة` - حذف من المفضلة\n"
+            "`/addfav المدينة` - إضافة مفضلة\n"
+            "`/delfav المدينة` - حذف مفضلة\n"
             "`/fav` - عرض المفضلة",
             parse_mode='Markdown'
         )
@@ -608,10 +665,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "menu":
         keyboard = [
-            [InlineKeyboardButton("🇸🇦 مدن السعودية", callback_data="sa")],
-            [InlineKeyboardButton("🇾🇪 مدن اليمن", callback_data="yemen")],
-            [InlineKeyboardButton("🌍 مدن عربية", callback_data="arab")],
-            [InlineKeyboardButton("🌎 مدن عالمية", callback_data="world")],
+            [InlineKeyboardButton("🇸🇦 السعودية", callback_data="sa"), InlineKeyboardButton("🇾🇪 اليمن", callback_data="yemen")],
+            [InlineKeyboardButton("🌍 عربية", callback_data="arab"), InlineKeyboardButton("🌎 عالمية", callback_data="world")],
             [InlineKeyboardButton("⭐ المفضلة", callback_data="fav_list")],
         ]
         await query.edit_message_text("🏠 *القائمة الرئيسية*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
