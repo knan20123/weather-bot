@@ -1,4 +1,3 @@
-from notifier import send_notification
 import os
 import asyncio
 import aiohttp
