@@ -694,7 +694,9 @@ async def show_fav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def compare_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    if update.callback_query:
+        await update.callback_query.answer()
+    await update.effective_message.reply_text(
         "⚖️ *مقارنة مدينتين*\n\nأرسل اسم *المدينة الأولى:*",
         parse_mode='Markdown'
     )
@@ -825,6 +827,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text("🏠 *القائمة الرئيسية*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """معالج اخطاء عام: يمنع انهيار البوت بصمت، ويُبلغ المستخدم برسالة واضحة"""
+    print(f"⚠️ حدث خطأ غير متوقع: {context.error}")
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text("❌ حدث خطأ غير متوقع، حاول مرة اخرى")
+    except Exception:
+        pass
+
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
@@ -848,6 +859,7 @@ def main():
     app.add_handler(compare_conv)
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
 
     print("✅ البوت يعمل...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
