@@ -355,7 +355,7 @@ def get_naive_local_now(tz_id: str) -> datetime:
     except Exception:
         return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# ========== خرائط الترجمة ==========
+# ========== خرائط الترجمة للظروف الجوية ==========
 CONDITION_MAP = {
     "ar": {
         "Sunny": "☀️ مشمس", "Clear": "🌙 صافي",
@@ -536,7 +536,7 @@ def get_weather_icon(code, is_day):
     elif code in [1030, 1135, 1147]: return "🌫️"
     else: return "🌡️"
 
-# ========== قوائم المدن الموسعة ==========
+# ========== قوائم المدن ==========
 ARAB_CITIES = [
     "القاهرة", "الإسكندرية", "دبي", "أبوظبي", "الشارقة",
     "الدوحة", "مسقط", "الكويت", "بغداد", "عمّان",
@@ -555,7 +555,6 @@ WORLD_CITIES = [
     "ستوكهولم", "أوسلو", "هلسنكي", "وارسو", "كييف"
 ]
 
-# ========== المدن اليمنية ==========
 YEMEN_COORDS = {
     "صنعاء": ("15.3694,44.1910", "صنعاء، اليمن"),
     "عدن": ("12.7855,45.0187", "عدن، اليمن"),
@@ -774,6 +773,25 @@ async def send_language_selection(update: Update, context: ContextTypes.DEFAULT_
     text = f"{t('ar', 'choose_language')}\n{t('en', 'choose_language')}\n{t('fa', 'choose_language')}"
     await update.message.reply_text(text, reply_markup=get_language_keyboard())
 
+def get_welcome_keyboard(lang):
+    return [
+        [InlineKeyboardButton(t(lang, "btn_arab"), callback_data="arab")],
+        [InlineKeyboardButton(t(lang, "btn_world"), callback_data="world")],
+        [InlineKeyboardButton(t(lang, "btn_favorites"), callback_data="fav_list")],
+        [InlineKeyboardButton(t(lang, "btn_advanced"), callback_data="advanced"), InlineKeyboardButton(t(lang, "btn_language"), callback_data="change_lang")],
+    ]
+
+def get_welcome_text(lang):
+    return (
+        f"╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
+        f"┃  {t(lang, 'welcome_title')}\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        f"{t(lang, 'welcome_features_title')}\n"
+        f"{t(lang, 'welcome_features')}\n\n"
+        f"{t(lang, 'welcome_prompt')}\n\n"
+        f"{t(lang, 'welcome_doctor')}"
+    )
+
 # ========== أوامر البوت ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -797,22 +815,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_welcome(update, lang)
 
 async def show_welcome(update: Update, lang: str):
-    keyboard = [
-        [InlineKeyboardButton(t(lang, "btn_arab"), callback_data="arab")],
-        [InlineKeyboardButton(t(lang, "btn_world"), callback_data="world")],
-        [InlineKeyboardButton(t(lang, "btn_favorites"), callback_data="fav_list")],
-        [InlineKeyboardButton(t(lang, "btn_advanced"), callback_data="advanced"), InlineKeyboardButton(t(lang, "btn_language"), callback_data="change_lang")],
-    ]
-    
-    welcome_text = (
-        f"╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
-        f"┃  {t(lang, 'welcome_title')}\n"
-        f"╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
-        f"{t(lang, 'welcome_features_title')}\n"
-        f"{t(lang, 'welcome_features')}\n\n"
-        f"{t(lang, 'welcome_prompt')}\n\n"
-        f"{t(lang, 'welcome_doctor')}"
-    )
+    keyboard = get_welcome_keyboard(lang)
+    welcome_text = get_welcome_text(lang)
     
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -936,8 +940,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    lang = get_user_language(query.from_user.id)
 
+    # اختيار اللغة
     if data.startswith("lang:"):
         new_lang = data.split(":")[1]
         user = query.from_user
@@ -947,16 +951,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_stats("user")
         if is_new:
             await notify_channel_new_user(context, user, new_lang)
-        await query.edit_message_text(t(new_lang, "language_set"))
-        await query.message.delete()
-        await show_welcome(update, new_lang)
+        
+        # عرض الترحيب مباشرة باللغة الجديدة
+        keyboard = get_welcome_keyboard(new_lang)
+        welcome_text = get_welcome_text(new_lang)
+        await query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
+    lang = get_user_language(query.from_user.id)
+
+    # تغيير اللغة من القائمة
     if data == "change_lang":
         text = f"{t('ar', 'choose_language')}\n{t('en', 'choose_language')}\n{t('fa', 'choose_language')}"
         await query.edit_message_text(text, reply_markup=get_language_keyboard())
         return
 
+    # عرض المفضلة
     if data == "fav_list":
         user_id = query.from_user.id
         favs = load_favorites_for_user(user_id)
@@ -970,10 +980,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(t(lang, "fav_yours"), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
+    # أوامر متقدمة
     if data == "advanced":
         await query.edit_message_text(t(lang, "advanced_text"), parse_mode='Markdown')
         return
 
+    # توقعات 3 أيام
     if data.startswith("fc:"):
         city = data.split(":", 1)[1]
         await query.edit_message_text(t(lang, "fetching_forecast"))
@@ -986,6 +998,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(t(lang, "forecast_not_available"))
         return
 
+    # الطقس الحالي
     if data.startswith("now:"):
         city = data.split(":", 1)[1]
         weather_data = await fetch_weather(city)
@@ -1000,6 +1013,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(t(lang, "city_not_available"))
         return
 
+    # توقعات ساعة بساعة
     if data.startswith("hr:"):
         city = data.split(":", 1)[1]
         await query.edit_message_text(t(lang, "fetching_hourly"))
@@ -1012,6 +1026,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(t(lang, "hourly_not_available"))
         return
 
+    # إضافة مفضلة
     if data.startswith("addfav:"):
         city = data.split(":", 1)[1]
         user_id = query.from_user.id
@@ -1021,18 +1036,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(f"⭐ {city} {t(lang, 'fav_exists')}")
         return
 
+    # مدن عربية
     if data == "arab":
         keyboard = build_city_keyboard(ARAB_CITIES)
         keyboard.append([InlineKeyboardButton(t(lang, "btn_back_main"), callback_data="menu")])
         await query.edit_message_text(f"*{t(lang, 'btn_arab')}*\n{t(lang, 'choose_city')}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
+    # مدن عالمية
     if data == "world":
         keyboard = build_city_keyboard(WORLD_CITIES)
         keyboard.append([InlineKeyboardButton(t(lang, "btn_back_main"), callback_data="menu")])
         await query.edit_message_text(f"*{t(lang, 'btn_world')}*\n{t(lang, 'choose_city')}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
+    # اختيار مدينة
     if data.startswith("city:"):
         city = data.split(":", 1)[1]
         await query.edit_message_text(f"{t(lang, 'fetching_weather')} *{city}*...", parse_mode='Markdown')
@@ -1048,6 +1066,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(t(lang, "city_not_available"))
         return
 
+    # القائمة الرئيسية
     if data == "menu":
         await show_welcome(update, lang)
         return
