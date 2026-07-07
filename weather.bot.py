@@ -2,21 +2,18 @@ import os
 import asyncio
 import aiohttp
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import pytz
 
 # ========== الإعدادات ==========
 TOKEN = os.getenv("TELEGRAM_TOKEN", "8244290417:AAFyZ2lK7fMEOxvW5wv98HfK8M8gRnUKyo4")
 API_KEY = os.getenv("API_KEY", "70db0e7c65784b59b8d24440260207")
 BASE_URL = "https://api.weatherapi.com/v1"
-
-# معرف القناة التي سيتم ارسال اشعارات المستخدمين الجدد اليها
-# يجب ان يكون البوت مشرفاً (Admin) في هذه القناة حتى يستطيع الارسال اليها
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003554303588")
 
-# ========== قاعدة البيانات (SQLite منفصلة) ==========
+# ========== قاعدة البيانات ==========
 DB_FILE = "bot_database.db"
 
 def get_db():
@@ -32,6 +29,7 @@ def init_db():
         username TEXT,
         first_name TEXT,
         last_name TEXT,
+        language TEXT DEFAULT 'ar',
         first_seen TEXT,
         last_seen TEXT,
         total_requests INTEGER DEFAULT 0
@@ -56,8 +54,7 @@ def init_db():
     conn.close()
     print("✅ تم تجهيز قاعدة البيانات: " + DB_FILE)
 
-def save_user_data(user_id, username, first_name, last_name):
-    """يحفظ او يحدث بيانات المستخدم. يرجع True لو كان مستخدماً جديداً (لاول مرة)"""
+def save_user_data(user_id, username, first_name, last_name, language=None):
     user_id = str(user_id)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
@@ -68,11 +65,13 @@ def save_user_data(user_id, username, first_name, last_name):
 
     if is_new:
         cur.execute(
-            "INSERT INTO users (user_id, username, first_name, last_name, first_seen, last_seen, total_requests) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1)",
-            (user_id, username or "", first_name or "", last_name or "", now, now)
+            "INSERT INTO users (user_id, username, first_name, last_name, language, first_seen, last_seen, total_requests) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            (user_id, username or "", first_name or "", last_name or "", language or "ar", now, now)
         )
     else:
+        if language:
+            cur.execute("UPDATE users SET language=? WHERE user_id=?", (language, user_id))
         cur.execute(
             "UPDATE users SET username=?, first_name=?, last_name=?, last_seen=?, total_requests=total_requests+1 "
             "WHERE user_id=?",
@@ -81,6 +80,23 @@ def save_user_data(user_id, username, first_name, last_name):
     conn.commit()
     conn.close()
     return is_new
+
+def get_user_language(user_id):
+    user_id = str(user_id)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT language FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row["language"] if row else "ar"
+
+def set_user_language(user_id, lang):
+    user_id = str(user_id)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET language=? WHERE user_id=?", (lang, user_id))
+    conn.commit()
+    conn.close()
 
 def save_city_search(user_id, city):
     user_id = str(user_id)
@@ -174,7 +190,134 @@ def remove_favorite(user_id, city):
     conn.close()
     return removed
 
-# ========== المناطق الزمنية (احتياطية فقط - نستخدم tz_id من الـ API عند توفره) ==========
+# ========== قاموس الترجمة الكامل (3 لغات) ==========
+T = {
+    "choose_language": {
+        "ar": "🌐 اختر لغتك",
+        "en": "🌐 Choose Your Language",
+        "fa": "🌐 زبان خود را انتخاب کنید"
+    },
+    "lang_arabic": {"ar": "🇸🇦 العربية", "en": "🇸🇦 العربية (Arabic)", "fa": "🇸🇦 عربی"},
+    "lang_english": {"ar": "🇬🇧 English", "en": "🇬🇧 English", "fa": "🇬🇧 انگلیسی"},
+    "lang_persian": {"ar": "🇮🇷 فارسی", "en": "🇮🇷 فارسی (Persian)", "fa": "🇮🇷 فارسی"},
+    
+    "welcome_title": {
+        "ar": "🌤️ *بوت الطقس الشامل*",
+        "en": "🌤️ *Comprehensive Weather Bot*",
+        "fa": "🌤️ *ربات جامع آب و هوا*"
+    },
+    "welcome_features_title": {
+        "ar": "📌 *المميزات:*",
+        "en": "📌 *Features:*",
+        "fa": "📌 *ویژگی‌ها:*"
+    },
+    "welcome_features": {
+        "ar": "• 🏙️ طقس دقيق لجميع مدن العالم\n• 📅 توقعات 3 أيام\n• ⏰ توقعات الساعة\n• ☀️ مؤشر UV وجودة الهواء\n• ⭐ حفظ المفضلة\n• 💡 نصائح ذكية",
+        "en": "• 🏙️ Accurate weather for all cities\n• 📅 3-day forecast\n• ⏰ Hourly forecast\n• ☀️ UV index & air quality\n• ⭐ Save favorites\n• 💡 Smart tips",
+        "fa": "• 🏙️ آب و هوای دقیق تمام شهرها\n• 📅 پیش‌بینی ۳ روزه\n• ⏰ پیش‌بینی ساعتی\n• ☀️ شاخص UV و کیفیت هوا\n• ⭐ ذخیره علاقه‌مندی‌ها\n• 💡 نکات هوشمند"
+    },
+    "welcome_prompt": {
+        "ar": "🔍 *اكتب اسم مدينتك مباشرة*",
+        "en": "🔍 *Type your city name directly*",
+        "fa": "🔍 *نام شهر خود را مستقیماً تایپ کنید*"
+    },
+    "welcome_doctor": {
+        "ar": "👨‍⚕️ *د/ عاصم النجار*",
+        "en": "👨‍⚕️ *Dr. Asem Al-Najjar*",
+        "fa": "👨‍⚕️ *دکتر عاصم النجار*"
+    },
+    "language_set": {
+        "ar": "✅ تم تعيين اللغة العربية",
+        "en": "✅ Language set to English",
+        "fa": "✅ زبان فارسی تنظیم شد"
+    },
+    
+    "btn_arab": {"ar": "🌍 مدن عربية", "en": "🌍 Arab Cities", "fa": "🌍 شهرهای عربی"},
+    "btn_world": {"ar": "🌎 مدن عالمية", "en": "🌎 Global Cities", "fa": "🌎 شهرهای جهانی"},
+    "btn_favorites": {"ar": "⭐ المفضلة", "en": "⭐ Favorites", "fa": "⭐ علاقه‌مندی‌ها"},
+    "btn_advanced": {"ar": "📋 أوامر متقدمة", "en": "📋 Advanced", "fa": "📋 دستورات پیشرفته"},
+    "btn_language": {"ar": "🌐 اللغات", "en": "🌐 Languages", "fa": "🌐 زبان‌ها"},
+    "btn_back_main": {"ar": "🔙 الرئيسية", "en": "🔙 Main Menu", "fa": "🔙 منوی اصلی"},
+    "btn_back_current": {"ar": "🔙 الطقس الحالي", "en": "🔙 Current Weather", "fa": "🔙 وضعیت فعلی"},
+    "choose_city": {"ar": "اختر مدينة:", "en": "Choose a city:", "fa": "یک شهر انتخاب کنید:"},
+    
+    "btn_forecast_3": {"ar": "📅 توقعات 3 أيام", "en": "📅 3-Day Forecast", "fa": "📅 پیش‌بینی ۳ روزه"},
+    "btn_hourly": {"ar": "⏰ طقس بالساعة", "en": "⏰ Hourly Weather", "fa": "⏰ آب و هوای ساعتی"},
+    "btn_add_fav": {"ar": "⭐ إضافة مفضلة", "en": "⭐ Add to Favorites", "fa": "⭐ افزودن به علاقه‌مندی‌ها"},
+    
+    "fetching_forecast": {"ar": "⏳ جاري جلب التوقعات...", "en": "⏳ Fetching forecast...", "fa": "⏳ در حال دریافت پیش‌بینی..."},
+    "fetching_hourly": {"ar": "⏳ جاري جلب توقعات الساعات...", "en": "⏳ Fetching hourly forecast...", "fa": "⏳ در حال دریافت پیش‌بینی ساعتی..."},
+    "fetching_weather": {"ar": "⏳ جاري جلب طقس", "en": "⏳ Fetching weather for", "fa": "⏳ در حال دریافت آب و هوای"},
+    "weather_not_found": {"ar": "❌ المدينة غير موجودة، أو تعذر جلب بيانات التوقعات حاليًا. حاول مرة اخرى.", "en": "❌ City not found or unable to fetch forecast data. Please try again.", "fa": "❌ شهر یافت نشد یا دریافت داده‌ها ممکن نیست. دوباره تلاش کنید."},
+    "forecast_not_available": {"ar": "❌ تعذر جلب التوقعات حاليًا، حاول لاحقًا", "en": "❌ Unable to fetch forecast now, try later", "fa": "❌ دریافت پیش‌بینی ممکن نیست، بعداً تلاش کنید"},
+    "hourly_not_available": {"ar": "❌ تعذر جلب توقعات الساعات حاليًا", "en": "❌ Unable to fetch hourly forecast now", "fa": "❌ دریافت پیش‌بینی ساعتی ممکن نیست"},
+    "city_not_available": {"ar": "❌ بيانات المدينة غير متوفرة حالياً", "en": "❌ City data not available right now", "fa": "❌ داده‌های شهر در حال حاضر موجود نیست"},
+    
+    "forecast_title": {"ar": "📅 *توقعات", "en": "📅 *Forecast for", "fa": "📅 *پیش‌بینی"},
+    "forecast_days": {"ar": "3 أيام قادمة", "en": "Next 3 Days", "fa": "۳ روز آینده"},
+    "hourly_title": {"ar": "⏰ *طقس", "en": "⏰ *Weather for", "fa": "⏰ *آب و هوای"},
+    "hourly_local_time": {"ar": "🕐 التوقيت المحلي:", "en": "🕐 Local Time:", "fa": "🕐 زمان محلی:"},
+    
+    "condition": {"ar": "الحالة", "en": "Condition", "fa": "وضعیت"},
+    "temperature": {"ar": "درجة الحرارة", "en": "Temperature", "fa": "دما"},
+    "current_temp": {"ar": "الحالية", "en": "Current", "fa": "فعلی"},
+    "feels_like": {"ar": "المحسوسة", "en": "Feels Like", "fa": "احساس می‌شود"},
+    "max_temp": {"ar": "العظمى", "en": "High", "fa": "بیشینه"},
+    "min_temp": {"ar": "الصغرى", "en": "Low", "fa": "کمینه"},
+    "details": {"ar": "تفاصيل", "en": "Details", "fa": "جزئیات"},
+    "humidity": {"ar": "الرطوبة", "en": "Humidity", "fa": "رطوبت"},
+    "wind": {"ar": "الرياح", "en": "Wind", "fa": "باد"},
+    "rain_chance": {"ar": "فرصة الأمطار", "en": "Rain Chance", "fa": "احتمال بارش"},
+    "uv_index": {"ar": "مؤشر UV", "en": "UV Index", "fa": "شاخص UV"},
+    "air_quality": {"ar": "جودة الهواء", "en": "Air Quality", "fa": "کیفیت هوا"},
+    "sun": {"ar": "الشمس", "en": "Sun", "fa": "خورشید"},
+    "sunrise": {"ar": "الشروق", "en": "Sunrise", "fa": "طلوع"},
+    "sunset": {"ar": "الغروب", "en": "Sunset", "fa": "غروب"},
+    "tips": {"ar": "نصائح", "en": "Tips", "fa": "نکات"},
+    "kmh": {"ar": "كم/س", "en": "km/h", "fa": "کیلومتر/ساعت"},
+    
+    "fav_added": {"ar": "✅ تمت إضافة", "en": "✅ Added", "fa": "✅ افزوده شد"},
+    "fav_exists": {"ar": "⭐ موجودة مسبقاً في المفضلة", "en": "⭐ Already in favorites", "fa": "⭐ قبلاً در علاقه‌مندی‌ها موجود است"},
+    "fav_removed": {"ar": "🗑️ تم حذف", "en": "🗑️ Removed", "fa": "🗑️ حذف شد"},
+    "fav_not_found": {"ar": "❌ غير موجودة في المفضلة", "en": "❌ Not in favorites", "fa": "❌ در علاقه‌مندی‌ها نیست"},
+    "fav_empty": {"ar": "⭐ لا توجد مدن مفضلة\nاستخدم `/addfav المدينة` للإضافة", "en": "⭐ No favorite cities\nUse `/addfav city` to add", "fa": "⭐ شهر مورد علاقه‌ای نیست\nاز `/addfav شهر` استفاده کنید"},
+    "fav_yours": {"ar": "⭐ *مدنك المفضلة:*", "en": "⭐ *Your Favorite Cities:*", "fa": "⭐ *شهرهای مورد علاقه شما:*"},
+    "fav_for": {"ar": "للمفضلة", "en": "to favorites", "fa": "به علاقه‌مندی‌ها"},
+    "fav_from": {"ar": "من المفضلة", "en": "from favorites", "fa": "از علاقه‌مندی‌ها"},
+    
+    "advanced_text": {
+        "ar": "📋 *أوامر متقدمة:*\n\n`/hourly المدينة` - طقس كل ساعة\n`/addfav المدينة` - إضافة مفضلة\n`/delfav المدينة` - حذف مفضلة\n`/fav` - عرض المفضلة\n`/stats` - إحصائيات البوت\n`/language` - تغيير اللغة",
+        "en": "📋 *Advanced Commands:*\n\n`/hourly city` - Hourly weather\n`/addfav city` - Add favorite\n`/delfav city` - Remove favorite\n`/fav` - Show favorites\n`/stats` - Bot statistics\n`/language` - Change language",
+        "fa": "📋 *دستورات پیشرفته:*\n\n`/hourly شهر` - آب و هوای ساعتی\n`/addfav شهر` - افزودن علاقه‌مندی\n`/delfav شهر` - حذف علاقه‌مندی\n`/fav` - نمایش علاقه‌مندی‌ها\n`/stats` - آمار ربات\n`/language` - تغییر زبان"
+    },
+    "hourly_usage": {"ar": "⚠️ استخدم: `/hourly الرياض`", "en": "⚠️ Use: `/hourly London`", "fa": "⚠️ استفاده: `/hourly تهران`"},
+    "addfav_usage": {"ar": "⚠️ استخدم: `/addfav الرياض`", "en": "⚠️ Use: `/addfav London`", "fa": "⚠️ استفاده: `/addfav تهران`"},
+    "delfav_usage": {"ar": "⚠️ استخدم: `/delfav الرياض`", "en": "⚠️ Use: `/delfav London`", "fa": "⚠️ استفاده: `/delfav تهران`"},
+    "city_not_found": {"ar": "❌ المدينة غير موجودة", "en": "❌ City not found", "fa": "❌ شهر یافت نشد"},
+    
+    "stats_title": {"ar": "📊 *إحصائيات البوت*", "en": "📊 *Bot Statistics*", "fa": "📊 *آمار ربات*"},
+    "stats_users": {"ar": "👥 المستخدمين:", "en": "👥 Users:", "fa": "👥 کاربران:"},
+    "stats_weather": {"ar": "🔍 طلبات الطقس:", "en": "🔍 Weather Requests:", "fa": "🔍 درخواست‌های آب و هوا:"},
+    "stats_favorites": {"ar": "⭐ المفضلة:", "en": "⭐ Favorites:", "fa": "⭐ علاقه‌مندی‌ها:"},
+    "stats_starts": {"ar": "🚀 مرات التشغيل:", "en": "🚀 Bot Starts:", "fa": "🚀 دفعات شروع:"},
+    "stats_updated": {"ar": "🕐 آخر تحديث:", "en": "🕐 Last Updated:", "fa": "🕐 آخرین به‌روزرسانی:"},
+    
+    "new_user_notify": {
+        "ar": "🆕 *مستخدم جديد انضم للبوت*\n\n👤 الاسم: {name}\n{username}\n🆔 ID: `{uid}`\n👥 اجمالي المستخدمين الآن: {total}",
+        "en": "🆕 *New User Joined the Bot*\n\n👤 Name: {name}\n{username}\n🆔 ID: `{uid}`\n👥 Total users now: {total}",
+        "fa": "🆕 *کاربر جدید به ربات پیوست*\n\n👤 نام: {name}\n{username}\n🆔 ID: `{uid}`\n👥 کل کاربران: {total}"
+    },
+}
+
+def t(lang, key, **kwargs):
+    if key in T:
+        text = T[key].get(lang, T[key].get("ar", key))
+        if kwargs:
+            text = text.format(**kwargs)
+        return text
+    return key
+
+# ========== المناطق الزمنية ==========
 TIMEZONES = {
     "صنعاء": "Asia/Aden", "عدن": "Asia/Aden", "تعز": "Asia/Aden",
     "الحديدة": "Asia/Aden", "إب": "Asia/Aden", "المكلا": "Asia/Aden",
@@ -197,7 +340,6 @@ TIMEZONES = {
 }
 
 def get_time_by_tzid(tz_id: str) -> tuple:
-    """يحسب الوقت المحلي والزمني بدقة باستخدام tz_id (IANA) - الاعتماد الاول على المعلومة القادمة من الـ API نفسها"""
     try:
         tz = pytz.timezone(tz_id)
         now = datetime.now(tz)
@@ -207,62 +349,213 @@ def get_time_by_tzid(tz_id: str) -> tuple:
         return now.strftime('%I:%M %p'), now.strftime('%A')
 
 def get_naive_local_now(tz_id: str) -> datetime:
-    """يرجع الوقت المحلي الحالي (بدون معلومة المنطقة الزمنية) لمقارنته بأوقات الـ API"""
     try:
         tz = pytz.timezone(tz_id)
         return datetime.now(tz).replace(tzinfo=None)
     except Exception:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# ========== حالات المحادثة ==========
-COMPARE_CITY1, COMPARE_CITY2 = range(2)
-
-# ========== ترجمة الحالات ==========
+# ========== خرائط الترجمة ==========
 CONDITION_MAP = {
-    "Sunny": "☀️ مشمس", "Clear": "🌙 صافي",
-    "Partly cloudy": "🌤️ غائم جزئياً", "Partly Cloudy": "🌤️ غائم جزئياً",
-    "Cloudy": "☁️ غائم", "Overcast": "☁️ غائم كلياً",
-    "Mist": "🌫️ ضباب خفيف", "Fog": "🌫️ ضباب",
-    "Freezing fog": "🌫️ ضباب متجمد",
-    "Patchy rain possible": "🌦️ أمطار متفرقة محتملة",
-    "Patchy rain nearby": "🌦️ أمطار متفرقة",
-    "Light rain": "🌧️ أمطار خفيفة", "Moderate rain": "🌧️ أمطار متوسطة",
-    "Heavy rain": "🌧️ أمطار غزيرة", "Torrential rain shower": "⛈️ أمطار طوفانية",
-    "Light drizzle": "🌦️ رذاذ خفيف",
-    "Light rain shower": "🌧️ زخات مطر خفيفة",
-    "Moderate rain at times": "🌧️ أمطار متوسطة أحياناً",
-    "Heavy rain at times": "🌧️ أمطار غزيرة أحياناً",
-    "Thunderstorm": "⛈️ عاصفة رعدية",
-    "Patchy light snow": "🌨️ ثلج خفيف", "Light snow": "🌨️ ثلج خفيف",
-    "Moderate snow": "🌨️ ثلج متوسط", "Heavy snow": "❄️ ثلج كثيف",
-    "Blizzard": "🌨️ عاصفة ثلجية", "Ice pellets": "🧊 كريات جليدية",
-    "Light sleet": "🌨️ صقيع خفيف", "Moderate or heavy sleet": "🌨️ صقيع كثيف",
-    "Sandstorm": "🌪️ عاصفة رملية", "Dust": "🌪️ غبار",
+    "ar": {
+        "Sunny": "☀️ مشمس", "Clear": "🌙 صافي",
+        "Partly cloudy": "🌤️ غائم جزئياً", "Partly Cloudy": "🌤️ غائم جزئياً",
+        "Cloudy": "☁️ غائم", "Overcast": "☁️ غائم كلياً",
+        "Mist": "🌫️ ضباب خفيف", "Fog": "🌫️ ضباب",
+        "Freezing fog": "🌫️ ضباب متجمد",
+        "Patchy rain possible": "🌦️ أمطار متفرقة محتملة",
+        "Patchy rain nearby": "🌦️ أمطار متفرقة",
+        "Light rain": "🌧️ أمطار خفيفة", "Moderate rain": "🌧️ أمطار متوسطة",
+        "Heavy rain": "🌧️ أمطار غزيرة", "Torrential rain shower": "⛈️ أمطار طوفانية",
+        "Light drizzle": "🌦️ رذاذ خفيف",
+        "Light rain shower": "🌧️ زخات مطر خفيفة",
+        "Moderate rain at times": "🌧️ أمطار متوسطة أحياناً",
+        "Heavy rain at times": "🌧️ أمطار غزيرة أحياناً",
+        "Thunderstorm": "⛈️ عاصفة رعدية",
+        "Patchy light snow": "🌨️ ثلج خفيف", "Light snow": "🌨️ ثلج خفيف",
+        "Moderate snow": "🌨️ ثلج متوسط", "Heavy snow": "❄️ ثلج كثيف",
+        "Blizzard": "🌨️ عاصفة ثلجية", "Ice pellets": "🧊 كريات جليدية",
+        "Light sleet": "🌨️ صقيع خفيف", "Moderate or heavy sleet": "🌨️ صقيع كثيف",
+        "Sandstorm": "🌪️ عاصفة رملية", "Dust": "🌪️ غبار",
+    },
+    "en": {
+        "Sunny": "☀️ Sunny", "Clear": "🌙 Clear",
+        "Partly cloudy": "🌤️ Partly Cloudy", "Partly Cloudy": "🌤️ Partly Cloudy",
+        "Cloudy": "☁️ Cloudy", "Overcast": "☁️ Overcast",
+        "Mist": "🌫️ Mist", "Fog": "🌫️ Fog",
+        "Freezing fog": "🌫️ Freezing Fog",
+        "Patchy rain possible": "🌦️ Patchy Rain Possible",
+        "Patchy rain nearby": "🌦️ Patchy Rain Nearby",
+        "Light rain": "🌧️ Light Rain", "Moderate rain": "🌧️ Moderate Rain",
+        "Heavy rain": "🌧️ Heavy Rain", "Torrential rain shower": "⛈️ Torrential Rain",
+        "Light drizzle": "🌦️ Light Drizzle",
+        "Light rain shower": "🌧️ Light Rain Shower",
+        "Moderate rain at times": "🌧️ Moderate Rain at Times",
+        "Heavy rain at times": "🌧️ Heavy Rain at Times",
+        "Thunderstorm": "⛈️ Thunderstorm",
+        "Patchy light snow": "🌨️ Patchy Light Snow", "Light snow": "🌨️ Light Snow",
+        "Moderate snow": "🌨️ Moderate Snow", "Heavy snow": "❄️ Heavy Snow",
+        "Blizzard": "🌨️ Blizzard", "Ice pellets": "🧊 Ice Pellets",
+        "Light sleet": "🌨️ Light Sleet", "Moderate or heavy sleet": "🌨️ Moderate/Heavy Sleet",
+        "Sandstorm": "🌪️ Sandstorm", "Dust": "🌪️ Dust",
+    },
+    "fa": {
+        "Sunny": "☀️ آفتابی", "Clear": "🌙 صاف",
+        "Partly cloudy": "🌤️ نیمه ابری", "Partly Cloudy": "🌤️ نیمه ابری",
+        "Cloudy": "☁️ ابری", "Overcast": "☁️ تمام ابری",
+        "Mist": "🌫️ مه خفیف", "Fog": "🌫️ مه",
+        "Freezing fog": "🌫️ مه یخ‌زده",
+        "Patchy rain possible": "🌦️ بارش پراکنده محتمل",
+        "Patchy rain nearby": "🌦️ بارش پراکنده",
+        "Light rain": "🌧️ باران سبک", "Moderate rain": "🌧️ باران متوسط",
+        "Heavy rain": "🌧️ باران شدید", "Torrential rain shower": "⛈️ باران سیل‌آسا",
+        "Light drizzle": "🌦️ نم‌نم باران",
+        "Light rain shower": "🌧️ رگبار سبک",
+        "Moderate rain at times": "🌧️ باران متوسط گاهی",
+        "Heavy rain at times": "🌧️ باران شدید گاهی",
+        "Thunderstorm": "⛈️ طوفان تندری",
+        "Patchy light snow": "🌨️ برف سبک", "Light snow": "🌨️ برف سبک",
+        "Moderate snow": "🌨️ برف متوسط", "Heavy snow": "❄️ برف سنگین",
+        "Blizzard": "🌨️ کولاک", "Ice pellets": "🧊 تگرگ ریز",
+        "Light sleet": "🌨️ برف‌باران سبک", "Moderate or heavy sleet": "🌨️ برف‌باران شدید",
+        "Sandstorm": "🌪️ طوفان شن", "Dust": "🌪️ گرد و غبار",
+    }
 }
 
 UV_LEVELS = {
-    0: ("⚪", "منعدم", "لا حاجة للحماية"),
-    1: ("🟢", "منخفض", "لا حاجة للحماية"),
-    2: ("🟢", "منخفض", "لا حاجة للحماية"),
-    3: ("🟡", "متوسط", "واقي شمس SPF 15+"),
-    4: ("🟡", "متوسط", "واقي شمس SPF 15+"),
-    5: ("🟡", "متوسط", "واقي شمس SPF 30+"),
-    6: ("🟠", "عالي", "تجنب الشمس 10ص-4م"),
-    7: ("🟠", "عالي", "تجنب الشمس 10ص-4م"),
-    8: ("🔴", "عالي جداً", "حماية قصوى ضرورية"),
-    9: ("🔴", "عالي جداً", "حماية قصوى ضرورية"),
-    10: ("🟣", "خطير", "لا تخرج للضرورة"),
-    11: ("🟣", "خطير جداً", "لا تخرج مطلقاً"),
+    "ar": {0: ("⚪", "منعدم", "لا حاجة للحماية"), 1: ("🟢", "منخفض", "لا حاجة للحماية"), 2: ("🟢", "منخفض", "لا حاجة للحماية"), 3: ("🟡", "متوسط", "واقي شمس SPF 15+"), 4: ("🟡", "متوسط", "واقي شمس SPF 15+"), 5: ("🟡", "متوسط", "واقي شمس SPF 30+"), 6: ("🟠", "عالي", "تجنب الشمس 10ص-4م"), 7: ("🟠", "عالي", "تجنب الشمس 10ص-4م"), 8: ("🔴", "عالي جداً", "حماية قصوى ضرورية"), 9: ("🔴", "عالي جداً", "حماية قصوى ضرورية"), 10: ("🟣", "خطير", "لا تخرج للضرورة"), 11: ("🟣", "خطير جداً", "لا تخرج مطلقاً")},
+    "en": {0: ("⚪", "None", "No protection needed"), 1: ("🟢", "Low", "No protection needed"), 2: ("🟢", "Low", "No protection needed"), 3: ("🟡", "Moderate", "Sunscreen SPF 15+"), 4: ("🟡", "Moderate", "Sunscreen SPF 15+"), 5: ("🟡", "Moderate", "Sunscreen SPF 30+"), 6: ("🟠", "High", "Avoid sun 10am-4pm"), 7: ("🟠", "High", "Avoid sun 10am-4pm"), 8: ("🔴", "Very High", "Maximum protection needed"), 9: ("🔴", "Very High", "Maximum protection needed"), 10: ("🟣", "Extreme", "Do not go out"), 11: ("🟣", "Very Extreme", "Do not go out at all")},
+    "fa": {0: ("⚪", "هیچ", "نیاز به محافظت نیست"), 1: ("🟢", "کم", "نیاز به محافظت نیست"), 2: ("🟢", "کم", "نیاز به محافظت نیست"), 3: ("🟡", "متوسط", "کرم ضد آفتاب SPF 15+"), 4: ("🟡", "متوسط", "کرم ضد آفتاب SPF 15+"), 5: ("🟡", "متوسط", "کرم ضد آفتاب SPF 30+"), 6: ("🟠", "زیاد", "اجتناب از آفتاب ۱۰ص-۴ع"), 7: ("🟠", "زیاد", "اجتناب از آفتاب ۱۰ص-۴ع"), 8: ("🔴", "بسیار زیاد", "محافظت حداکثری ضروری"), 9: ("🔴", "بسیار زیاد", "محافظت حداکثری ضروری"), 10: ("🟣", "خطرناک", "خارج نشوید"), 11: ("🟣", "بسیار خطرناک", "اصلاً خارج نشوید")}
 }
 
-def get_aqi_info(pm25):
-    if pm25 <= 12: return "🟢", "ممتاز", "هواء نقي وصحي"
-    elif pm25 <= 35: return "🟡", "جيد", "جودة هواء مقبولة"
-    elif pm25 <= 55: return "🟠", "معتدل", "قد يؤثر على الحساسين"
-    elif pm25 <= 150: return "🔴", "غير صحي", "تجنب التعرض الطويل"
-    else: return "🟣", "خطير", "تجنب الخروج نهائياً"
+def get_aqi_info(lang, pm25):
+    if lang == "ar":
+        if pm25 <= 12: return "🟢", "ممتاز", "هواء نقي وصحي"
+        elif pm25 <= 35: return "🟡", "جيد", "جودة هواء مقبولة"
+        elif pm25 <= 55: return "🟠", "معتدل", "قد يؤثر على الحساسين"
+        elif pm25 <= 150: return "🔴", "غير صحي", "تجنب التعرض الطويل"
+        else: return "🟣", "خطير", "تجنب الخروج نهائياً"
+    elif lang == "fa":
+        if pm25 <= 12: return "🟢", "عالی", "هوای پاک و سالم"
+        elif pm25 <= 35: return "🟡", "خوب", "کیفیت هوا قابل قبول"
+        elif pm25 <= 55: return "🟠", "متوسط", "ممکن است بر حساسان تأثیر بگذارد"
+        elif pm25 <= 150: return "🔴", "ناسالم", "از قرار گرفتن طولانی اجتناب کنید"
+        else: return "🟣", "خطرناک", "اصلاً خارج نشوید"
+    else:
+        if pm25 <= 12: return "🟢", "Excellent", "Clean & healthy air"
+        elif pm25 <= 35: return "🟡", "Good", "Acceptable air quality"
+        elif pm25 <= 55: return "🟠", "Moderate", "May affect sensitive people"
+        elif pm25 <= 150: return "🔴", "Unhealthy", "Avoid prolonged exposure"
+        else: return "🟣", "Hazardous", "Do not go out at all"
 
-# ========== تصحيح أسماء المدن اليمنية ==========
+def get_wind_dir(lang, direction):
+    dirs = {
+        "ar": {"N": "⬆️ شمال", "S": "⬇️ جنوب", "E": "➡️ شرق", "W": "⬅️ غرب", "NE": "↗️ شمال شرق", "NW": "↖️ شمال غرب", "SE": "↘️ جنوب شرق", "SW": "↙️ جنوب غرب"},
+        "en": {"N": "⬆️ North", "S": "⬇️ South", "E": "➡️ East", "W": "⬅️ West", "NE": "↗️ NE", "NW": "↖️ NW", "SE": "↘️ SE", "SW": "↙️ SW"},
+        "fa": {"N": "⬆️ شمال", "S": "⬇️ جنوب", "E": "➡️ شرق", "W": "⬅️ غرب", "NE": "↗️ شمال شرق", "NW": "↖️ شمال غرب", "SE": "↘️ جنوب شرق", "SW": "↙️ جنوب غرب"},
+    }
+    return dirs.get(lang, dirs["ar"]).get(direction, direction)
+
+DAYS_AR = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+DAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAYS_FA = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه"]
+
+def get_day_name(lang, date):
+    weekday = date.weekday()
+    if lang == "en": return DAYS_EN[weekday]
+    elif lang == "fa": return DAYS_FA[weekday]
+    return DAYS_AR[weekday]
+
+def translate_condition(lang, condition):
+    return CONDITION_MAP.get(lang, CONDITION_MAP["ar"]).get(condition, f"🌡️ {condition}")
+
+def get_temp_bar(temp):
+    if temp <= 0: return "🔵" * 5
+    elif temp <= 10: return "🔵" * 4 + "⚪"
+    elif temp <= 20: return "🟢" * 3 + "⚪" * 2
+    elif temp <= 30: return "🟡" * 3 + "⚪" * 2
+    elif temp <= 40: return "🟠" * 4 + "⚪"
+    else: return "🔴" * 5
+
+def get_weather_advice(lang, temp, rain, uv, wind):
+    if lang == "en":
+        tips = []
+        if rain >= 80: tips.append("🌂 Rain almost certain - don't forget umbrella")
+        elif rain >= 50: tips.append("🌂 High chance of rain - take your umbrella")
+        elif rain >= 30: tips.append("🌦️ Chance of rain - be prepared")
+        if temp >= 45: tips.append("🔥 Dangerous heat - avoid going out during day")
+        elif temp >= 40: tips.append("☀️ Extreme heat - drink plenty of water")
+        elif temp >= 35: tips.append("🌡️ Hot - reduce sun exposure")
+        elif temp >= 20: tips.append("🌸 Pleasant weather - great for outdoors")
+        elif temp >= 10: tips.append("🍂 Relatively cold - take a light jacket")
+        elif temp >= 0: tips.append("🥶 Cold - wear warm clothes")
+        else: tips.append("❄️ Very cold - full protection needed")
+        if uv >= 8: tips.append("🧴 Sunscreen essential")
+        if wind >= 40: tips.append("💨 Strong winds - be careful")
+        if temp >= 20 and rain < 30 and wind < 25: tips.append("🏃 Great conditions for sports")
+        return "\n".join(f"• {tip}" for tip in tips)
+    elif lang == "fa":
+        tips = []
+        if rain >= 80: tips.append("🌂 باران تقریباً قطعی - چتر فراموش نشود")
+        elif rain >= 50: tips.append("🌂 احتمال زیاد باران - چتر بردارید")
+        elif rain >= 30: tips.append("🌦️ احتمال باران - آماده باشید")
+        if temp >= 45: tips.append("🔥 گرمای خطرناک - در روز خارج نشوید")
+        elif temp >= 40: tips.append("☀️ گرمای شدید - آب زیاد بنوشید")
+        elif temp >= 35: tips.append("🌡️ گرم - کمتر در آفتاب بمانید")
+        elif temp >= 20: tips.append("🌸 هوای مطبوع - عالی برای بیرون رفتن")
+        elif temp >= 10: tips.append("🍂 نسبتاً سرد - ژاکت سبک بردارید")
+        elif temp >= 0: tips.append("🥶 سرد - لباس گرم بپوشید")
+        else: tips.append("❄️ بسیار سرد - محافظت کامل لازم است")
+        if uv >= 8: tips.append("🧴 کرم ضد آفتاب ضروری است")
+        if wind >= 40: tips.append("💨 باد شدید - مراقب باشید")
+        if temp >= 20 and rain < 30 and wind < 25: tips.append("🏃 شرایط عالی برای ورزش")
+        return "\n".join(f"• {tip}" for tip in tips)
+    else:
+        tips = []
+        if rain >= 80: tips.append("🌂 أمطار شبه مؤكدة - لا تنسَ المظلة")
+        elif rain >= 50: tips.append("🌂 احتمال كبير للأمطار - خذ مظلتك")
+        elif rain >= 30: tips.append("🌦️ فرصة أمطار - كن مستعداً")
+        if temp >= 45: tips.append("🔥 حرارة خطيرة - تجنب الخروج نهاراً")
+        elif temp >= 40: tips.append("☀️ حرارة شديدة - اشرب ماء بكثرة")
+        elif temp >= 35: tips.append("🌡️ حار - قلل التعرض للشمس")
+        elif temp >= 20: tips.append("🌸 جو معتدل - مثالي للخروج")
+        elif temp >= 10: tips.append("🍂 بارد نسبياً - خذ سترة خفيفة")
+        elif temp >= 0: tips.append("🥶 بارد - ارتدِ ملابس دافئة")
+        else: tips.append("❄️ شديد البرودة - حماية كاملة")
+        if uv >= 8: tips.append("🧴 واقي شمس ضروري جداً")
+        if wind >= 40: tips.append("💨 رياح قوية - انتبه")
+        if temp >= 20 and rain < 30 and wind < 25: tips.append("🏃 ظروف ممتازة للرياضة")
+        return "\n".join(f"• {tip}" for tip in tips)
+
+def get_weather_icon(code, is_day):
+    if code == 1000: return "☀️" if is_day else "🌙"
+    elif code in [1003, 1006, 1009]: return "🌤️" if is_day else "☁️"
+    elif code in [1063, 1150, 1153, 1180, 1183, 1186, 1189, 1192, 1195, 1240, 1243, 1246]: return "🌧️"
+    elif code in [1087, 1273, 1276, 1279, 1282]: return "⛈️"
+    elif code in [1066, 1114, 1210, 1213, 1216, 1219, 1222, 1225, 1255, 1258]: return "🌨️"
+    elif code in [1030, 1135, 1147]: return "🌫️"
+    else: return "🌡️"
+
+# ========== قوائم المدن الموسعة ==========
+ARAB_CITIES = [
+    "القاهرة", "الإسكندرية", "دبي", "أبوظبي", "الشارقة",
+    "الدوحة", "مسقط", "الكويت", "بغداد", "عمّان",
+    "بيروت", "الخرطوم", "تونس", "الجزائر", "الدار البيضاء",
+    "الرباط", "طرابلس", "نواكشوط", "جيبوتي", "مقديشو",
+    "الرياض", "جدة", "مكة", "المدينة", "الدمام",
+    "صنعاء", "عدن", "تعز", "الحديدة", "المكلا"
+]
+
+WORLD_CITIES = [
+    "لندن", "باريس", "نيويورك", "طوكيو", "برلين",
+    "روما", "مدريد", "موسكو", "إسطنبول", "كوالالمبور",
+    "جاكرتا", "سيدني", "تورونتو", "ساو باولو", "مكسيكو سيتي",
+    "سيول", "بكين", "شنغهاي", "مومباي", "بانكوك",
+    "أمستردام", "فيينا", "براغ", "لشبونة", "أثينا",
+    "ستوكهولم", "أوسلو", "هلسنكي", "وارسو", "كييف"
+]
+
+# ========== المدن اليمنية ==========
 YEMEN_COORDS = {
     "صنعاء": ("15.3694,44.1910", "صنعاء، اليمن"),
     "عدن": ("12.7855,45.0187", "عدن، اليمن"),
@@ -278,43 +571,7 @@ YEMEN_COORDS = {
     "مأرب": ("15.4667,45.3333", "مأرب، اليمن"),
 }
 
-def translate_condition(condition: str) -> str:
-    return CONDITION_MAP.get(condition, f"🌡️ {condition}")
-
-def get_temp_bar(temp: float) -> str:
-    if temp <= 0: return "🔵" * 5
-    elif temp <= 10: return "🔵" * 4 + "⚪"
-    elif temp <= 20: return "🟢" * 3 + "⚪" * 2
-    elif temp <= 30: return "🟡" * 3 + "⚪" * 2
-    elif temp <= 40: return "🟠" * 4 + "⚪"
-    else: return "🔴" * 5
-
-def get_weather_advice(temp: float, rain: int, uv: float, wind: float) -> str:
-    tips = []
-    if rain >= 80: tips.append("🌂 أمطار شبه مؤكدة - لا تنسَ المظلة")
-    elif rain >= 50: tips.append("🌂 احتمال كبير للأمطار - خذ مظلتك")
-    elif rain >= 30: tips.append("🌦️ فرصة أمطار - كن مستعداً")
-    if temp >= 45: tips.append("🔥 حرارة خطيرة - تجنب الخروج نهاراً")
-    elif temp >= 40: tips.append("☀️ حرارة شديدة - اشرب ماء بكثرة")
-    elif temp >= 35: tips.append("🌡️ حار - قلل التعرض للشمس")
-    elif temp >= 20: tips.append("🌸 جو معتدل - مثالي للخروج")
-    elif temp >= 10: tips.append("🍂 بارد نسبياً - خذ سترة خفيفة")
-    elif temp >= 0: tips.append("🥶 بارد - ارتدِ ملابس دافئة")
-    else: tips.append("❄️ شديد البرودة - حماية كاملة")
-    if uv >= 8: tips.append("🧴 واقي شمس ضروري جداً")
-    if wind >= 40: tips.append("💨 رياح قوية - انتبه")
-    if temp >= 20 and rain < 30 and wind < 25: tips.append("🏃 ظروف ممتازة للرياضة")
-    return "\n".join(f"• {tip}" for tip in tips)
-
-def get_weather_icon(code: int, is_day: bool) -> str:
-    if code == 1000: return "☀️" if is_day else "🌙"
-    elif code in [1003, 1006, 1009]: return "🌤️" if is_day else "☁️"
-    elif code in [1063, 1150, 1153, 1180, 1183, 1186, 1189, 1192, 1195, 1240, 1243, 1246]: return "🌧️"
-    elif code in [1087, 1273, 1276, 1279, 1282]: return "⛈️"
-    elif code in [1066, 1114, 1210, 1213, 1216, 1219, 1222, 1225, 1255, 1258]: return "🌨️"
-    elif code in [1030, 1135, 1147]: return "🌫️"
-    else: return "🌡️"
-
+# ========== دوال الـ API ==========
 async def fetch_weather(city: str) -> dict | None:
     if city in YEMEN_COORDS:
         search_query = YEMEN_COORDS[city][0]
@@ -362,7 +619,7 @@ async def fetch_hourly(city: str) -> dict | None:
         except Exception:
             return None
 
-def format_current_weather(data: dict) -> tuple:
+def format_current_weather(data: dict, lang: str) -> tuple:
     c = data["current"]["current"]
     f = data["forecast"]["forecast"]["forecastday"][0]
     astro = f["astro"]
@@ -372,7 +629,7 @@ def format_current_weather(data: dict) -> tuple:
     tz_id = location.get('tz_id') or TIMEZONES.get(city, 'Asia/Aden')
     local_time, day_name_ar = get_time_by_tzid(tz_id)
 
-    condition = translate_condition(c["condition"]["text"])
+    condition = translate_condition(lang, c["condition"]["text"])
     temp = float(c["temp_c"])
     feels_like = float(c["feelslike_c"])
     humidity = c["humidity"]
@@ -388,19 +645,16 @@ def format_current_weather(data: dict) -> tuple:
     aqi = c.get("air_quality", {})
     if aqi and aqi.get("pm2_5", 0) > 0:
         pm25 = aqi["pm2_5"]
-        emoji, level, desc = get_aqi_info(pm25)
-        aqi_text = f"{emoji} *جودة الهواء:* `{level}` - {desc}\n"
+        emoji, level, desc = get_aqi_info(lang, pm25)
+        aqi_text = f"{emoji} *{t(lang, 'air_quality')}:* `{level}` - {desc}\n"
 
     uv_int = int(uv)
-    uv_emoji, uv_level, uv_advice = UV_LEVELS.get(uv_int, ("⚪", "غير معروف", ""))
+    uv_data = UV_LEVELS.get(lang, UV_LEVELS["ar"]).get(uv_int, ("⚪", "?", ""))
+    uv_emoji, uv_level, uv_advice = uv_data
 
-    wind_dir_ar = {
-        "N": "⬆️ شمال", "S": "⬇️ جنوب", "E": "➡️ شرق", "W": "⬅️ غرب",
-        "NE": "↗️ شمال شرق", "NW": "↖️ شمال غرب", "SE": "↘️ جنوب شرق", "SW": "↙️ جنوب غرب",
-    }
-    wind_dir = wind_dir_ar.get(c.get("wind_dir", ""), c.get("wind_dir", ""))
+    wind_dir = get_wind_dir(lang, c.get("wind_dir", ""))
 
-    advice = get_weather_advice(temp, rain_chance, uv, wind)
+    advice = get_weather_advice(lang, temp, rain_chance, uv, wind)
 
     msg = f"""
 ╭━━━━━━━━━━━━━━━━━━━━━━╮
@@ -409,69 +663,68 @@ def format_current_weather(data: dict) -> tuple:
 ┃  📅 {day_name_ar} | 🕐 {local_time}
 ╰━━━━━━━━━━━━━━━━━━━━━━╯
 
-✨ *الحالة:* {condition}
+✨ *{t(lang, 'condition')}:* {condition}
 
-🌡️ *درجة الحرارة:*
+🌡️ *{t(lang, 'temperature')}:*
 {temp_bar}
-┣ 📊 *الحالية:* `{temp:.1f}°C`
-┣ 🤔 *المحسوسة:* `{feels_like:.1f}°C`
-┣ ⬆️ *العظمى:* `{f['day']['maxtemp_c']:.1f}°C`
-┗ ⬇️ *الصغرى:* `{f['day']['mintemp_c']:.1f}°C`
+┣ 📊 *{t(lang, 'current_temp')}:* `{temp:.1f}°C`
+┣ 🤔 *{t(lang, 'feels_like')}:* `{feels_like:.1f}°C`
+┣ ⬆️ *{t(lang, 'max_temp')}:* `{f['day']['maxtemp_c']:.1f}°C`
+┗ ⬇️ *{t(lang, 'min_temp')}:* `{f['day']['mintemp_c']:.1f}°C`
 
-╭───────── 📊 *تفاصيل* ─────────╮
-┃ 💧 الرطوبة: `{humidity}%`
-┃ 💨 الرياح: `{wind:.0f} كم/س` {wind_dir}
-┃ 🌧️ فرصة الأمطار: `{rain_chance}%`
-┃ ☀️ مؤشر UV: {uv_emoji} `{uv:.0f}` ({uv_level})
+╭───────── 📊 *{t(lang, 'details')}* ─────────╮
+┃ 💧 {t(lang, 'humidity')}: `{humidity}%`
+┃ 💨 {t(lang, 'wind')}: `{wind:.0f} {t(lang, 'kmh')}` {wind_dir}
+┃ 🌧️ {t(lang, 'rain_chance')}: `{rain_chance}%`
+┃ ☀️ {t(lang, 'uv_index')}: {uv_emoji} `{uv:.0f}` ({uv_level})
 ╰──────────────────────────────╯
 
-╭─────── 🏭 *جودة الهواء* ───────╮
-┃ {aqi_text if aqi_text else '🟢 *جودة الهواء:* `ممتاز` - هواء نقي وصحي'}
+╭─────── 🏭 *{t(lang, 'air_quality')}* ───────╮
+┃ {aqi_text if aqi_text else '🟢 *' + t(lang, 'air_quality') + ':* `' + get_aqi_info(lang, 0)[1] + '`'}
 ╰──────────────────────────────╯
 
-╭─────── 🌅 *الشمس* ───────╮
-┃ 🌅 الشروق: `{astro['sunrise']}`
-┃ 🌇 الغروب: `{astro['sunset']}`
+╭─────── 🌅 *{t(lang, 'sun')}* ───────╮
+┃ 🌅 {t(lang, 'sunrise')}: `{astro['sunrise']}`
+┃ 🌇 {t(lang, 'sunset')}: `{astro['sunset']}`
 ╰──────────────────────────╯
 
-╭─────── 💡 *نصائح* ───────╮
+╭─────── 💡 *{t(lang, 'tips')}* ───────╮
 {advice}
 ╰──────────────────────────╯
 """
     return msg, temp, rain_chance
 
-def format_forecast(data: dict) -> str:
+def format_forecast(data: dict, lang: str) -> str:
     location = data["forecast"]["location"]
     days = data["forecast"]["forecast"]["forecastday"]
     msg = f"""
 ╭━━━━━━━━━━━━━━━━━━━━━━╮
-┃  📅 *توقعات {location['name'].upper()}*
-┃  3 أيام قادمة
+┃  {t(lang, 'forecast_title')} {location['name'].upper()}*
+┃  {t(lang, 'forecast_days')}
 ╰━━━━━━━━━━━━━━━━━━━━━━╯
 
 """
-    days_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-
     for day in days:
         date = datetime.strptime(day["date"], "%Y-%m-%d")
-        day_name = days_ar[date.weekday()]
+        day_name = get_day_name(lang, date)
         d = day["day"]
-        condition = translate_condition(d["condition"]["text"])
+        condition = translate_condition(lang, d["condition"]["text"])
         uv = d.get("uv", 0)
-        uv_emoji = UV_LEVELS.get(int(uv), ("⚪",))[0]
+        uv_data = UV_LEVELS.get(lang, UV_LEVELS["ar"]).get(int(uv), ("⚪",))
+        uv_emoji = uv_data[0]
 
         msg += f"""
 ┏━━ *{day_name}* | {date.strftime('%d/%m')} ━━┓
 ┃ ✨ {condition}
 ┃ 🌡️ `{d['maxtemp_c']:.1f}°` / `{d['mintemp_c']:.1f}°`
-┃ 💧 رطوبة: `{d['avghumidity']}%`
-┃ 🌧️ أمطار: `{d['daily_chance_of_rain']}%`
+┃ 💧 {t(lang, 'humidity')}: `{d['avghumidity']}%`
+┃ 🌧️ {t(lang, 'rain_chance')}: `{d['daily_chance_of_rain']}%`
 ┃ ☀️ UV: {uv_emoji} `{uv:.0f}`
 ┗━━━━━━━━━━━━━━━━━━━━━━━━┛
 """
     return msg
 
-def format_hourly(data: dict) -> str:
+def format_hourly(data: dict, lang: str) -> str:
     location = data["location"]
     hours = data["forecast"]["forecastday"][0]["hour"]
     city = location['name']
@@ -482,107 +735,95 @@ def format_hourly(data: dict) -> str:
 
     msg = f"""
 ╭━━━━━━━━━━━━━━━━━━━━━━╮
-┃  ⏰ *طقس {location['name'].upper()}*
-┃  🕐 التوقيت المحلي: {local_time}
+┃  {t(lang, 'hourly_title')} {location['name'].upper()}*
+┃  {t(lang, 'hourly_local_time')} {local_time}
 ╰━━━━━━━━━━━━━━━━━━━━━━╯
 
 """
-
     count = 0
     for hour in hours:
         h_time = datetime.strptime(hour["time"], "%Y-%m-%d %H:%M")
         if h_time >= now_local and count < 8:
-            condition = translate_condition(hour["condition"]["text"])
+            condition = translate_condition(lang, hour["condition"]["text"])
             temp = hour['temp_c']
             temp_icon = "🔥" if temp > 35 else "☀️" if temp > 25 else "🌤️" if temp > 15 else "❄️"
             msg += f"┃ `{h_time.strftime('%H:%M')}` {temp_icon} `{temp:.1f}°` | {condition} | 💧`{hour['humidity']}%`\n"
             count += 1
-
     return msg
 
-def format_compare(data1: dict, data2: dict) -> str:
-    c1 = data1["current"]["current"]
-    c2 = data2["current"]["current"]
-    n1 = data1["current"]["location"]["name"]
-    n2 = data2["current"]["location"]["name"]
-
-    return f"""
-╭━━━━━━━━━━━━━━━━━━━━━━╮
-┃  ⚖️ *مقارنة الطقس*
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-
-┏━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┓
-┃          ┃ 🏙️ *{n1[:8]}* ┃ 🏙️ *{n2[:8]}* ┃
-┣━━━━━━━━━━╋━━━━━━━━━━╋━━━━━━━━━━┫
-┃ ✨ الحالة ┃ {translate_condition(c1['condition']['text'])[:12]} ┃ {translate_condition(c2['condition']['text'])[:12]} ┃
-┃ 🌡️ الحرارة ┃ `{c1['temp_c']:.1f}°C` ┃ `{c2['temp_c']:.1f}°C` ┃
-┃ 🤔 محسوسة ┃ `{c1['feelslike_c']:.1f}°C` ┃ `{c2['feelslike_c']:.1f}°C` ┃
-┃ 💧 رطوبة ┃ `{c1['humidity']}%` ┃ `{c2['humidity']}%` ┃
-┃ 💨 رياح ┃ `{c1['wind_kph']:.0f}` ┃ `{c2['wind_kph']:.0f}` ┃
-┗━━━━━━━━━━┻━━━━━━━━━━┻━━━━━━━━━━┛
-"""
-
-ADVANCED_TEXT = (
-    "📋 *أوامر متقدمة:*\n\n"
-    "`/hourly المدينة` - طقس كل ساعة\n"
-    "`/compare` - مقارنة مدينتين\n"
-    "`/addfav المدينة` - إضافة مفضلة\n"
-    "`/delfav المدينة` - حذف مفضلة\n"
-    "`/fav` - عرض المفضلة\n"
-    "`/stats` - إحصائيات البوت"
-)
-
-async def notify_channel_new_user(context: ContextTypes.DEFAULT_TYPE, user):
-    """يرسل اشعاراً للقناة عند انضمام مستخدم جديد لاول مرة"""
-    username_line = f"🔗 المعرف: @{user.username}" if user.username else "🔗 المعرف: لا يوجد"
+# ========== إشعار القناة ==========
+async def notify_channel_new_user(context: ContextTypes.DEFAULT_TYPE, user, lang):
+    username_line = f"🔗 @{user.username}" if user.username else "🔗 لا يوجد"
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    notify_text = (
-        "🆕 *مستخدم جديد انضم للبوت*\n\n"
-        f"👤 الاسم: {full_name}\n"
-        f"{username_line}\n"
-        f"🆔 ID: `{user.id}`\n"
-        f"👥 اجمالي المستخدمين الآن: {get_stat_int('total_users', 0)}"
-    )
+    notify_text = t(lang, "new_user_notify", name=full_name, username=username_line, uid=user.id, total=get_stat_int('total_users', 0))
     try:
         await context.bot.send_message(chat_id=CHANNEL_ID, text=notify_text, parse_mode='Markdown')
     except Exception as ex:
-        print(f"⚠️ خطأ في ارسال اشعار القناة (تأكد ان البوت مشرف في القناة): {ex}")
+        print(f"⚠️ خطأ في ارسال اشعار القناة: {ex}")
+
+# ========== شاشة اختيار اللغة ==========
+def get_language_keyboard():
+    keyboard = [
+        [InlineKeyboardButton(t("ar", "lang_arabic"), callback_data="lang:ar")],
+        [InlineKeyboardButton(t("en", "lang_english"), callback_data="lang:en")],
+        [InlineKeyboardButton(t("fa", "lang_persian"), callback_data="lang:fa")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def send_language_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = f"{t('ar', 'choose_language')}\n{t('en', 'choose_language')}\n{t('fa', 'choose_language')}"
+    await update.message.reply_text(text, reply_markup=get_language_keyboard())
 
 # ========== أوامر البوت ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    is_new = save_user_data(user.id, user.username, user.first_name, user.last_name)
-    update_stats("start")
-    update_stats("user")
+    user_id = str(user.id)
+    
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT language FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    
+    if row is None:
+        await send_language_selection(update, context)
+    else:
+        lang = row["language"] or "ar"
+        is_new = save_user_data(user.id, user.username, user.first_name, user.last_name)
+        update_stats("start")
+        update_stats("user")
+        if is_new:
+            await notify_channel_new_user(context, user, lang)
+        await show_welcome(update, lang)
 
-    if is_new:
-        await notify_channel_new_user(context, user)
-
+async def show_welcome(update: Update, lang: str):
     keyboard = [
-        [InlineKeyboardButton("🇸🇦 السعودية", callback_data="sa"), InlineKeyboardButton("🇾🇪 اليمن", callback_data="yemen")],
-        [InlineKeyboardButton("🌍 عربية", callback_data="arab"), InlineKeyboardButton("🌎 عالمية", callback_data="world")],
-        [InlineKeyboardButton("⭐ المفضلة", callback_data="fav_list"), InlineKeyboardButton("⚖️ مقارنة", callback_data="compare_start")],
-        [InlineKeyboardButton("📋 أوامر متقدمة", callback_data="advanced")]
+        [InlineKeyboardButton(t(lang, "btn_arab"), callback_data="arab")],
+        [InlineKeyboardButton(t(lang, "btn_world"), callback_data="world")],
+        [InlineKeyboardButton(t(lang, "btn_favorites"), callback_data="fav_list")],
+        [InlineKeyboardButton(t(lang, "btn_advanced"), callback_data="advanced"), InlineKeyboardButton(t(lang, "btn_language"), callback_data="change_lang")],
     ]
-    await update.message.reply_text(
-        "╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
-        "┃  🌤️ *بوت الطقس الشامل*\n"
-        "╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
-        "📌 *المميزات:*\n"
-        "• 🏙️ طقس دقيق لجميع مدن العالم\n"
-        "• 📅 توقعات 3 أيام\n"
-        "• ⏰ توقعات الساعة\n"
-        "• ☀️ مؤشر UV وجودة الهواء\n"
-        "• ⚖️ مقارنة بين مدينتين\n"
-        "• ⭐ حفظ المفضلة\n"
-        "• 💡 نصائح ذكية\n\n"
-        "🔍 *اكتب اسم مدينتك مباشرة*\n\n"
-        "👨‍⚕️ *د/ عاصم النجار*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+    
+    welcome_text = (
+        f"╭━━━━━━━━━━━━━━━━━━━━━━╮\n"
+        f"┃  {t(lang, 'welcome_title')}\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        f"{t(lang, 'welcome_features_title')}\n"
+        f"{t(lang, 'welcome_features')}\n\n"
+        f"{t(lang, 'welcome_prompt')}\n\n"
+        f"{t(lang, 'welcome_doctor')}"
     )
+    
+    if update.message:
+        await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_language_selection(update, context)
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_user_language(update.effective_user.id)
     total_users = get_stat_int("total_users", 0)
     total_weather = get_stat_int("total_weather_requests", 0)
     total_favorites = get_stat_int("total_favorites", 0)
@@ -590,21 +831,23 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_updated = get_stat_raw("last_updated", "--")
 
     await update.message.reply_text(
-        f"📊 *إحصائيات البوت*\n\n"
-        f"👥 المستخدمين: `{total_users}`\n"
-        f"🔍 طلبات الطقس: `{total_weather}`\n"
-        f"⭐ المفضلة: `{total_favorites}`\n"
-        f"🚀 مرات التشغيل: `{start_count}`\n"
-        f"🕐 آخر تحديث: `{last_updated}`",
+        f"{t(lang, 'stats_title')}\n\n"
+        f"{t(lang, 'stats_users')} `{total_users}`\n"
+        f"{t(lang, 'stats_weather')} `{total_weather}`\n"
+        f"{t(lang, 'stats_favorites')} `{total_favorites}`\n"
+        f"{t(lang, 'stats_starts')} `{start_count}`\n"
+        f"{t(lang, 'stats_updated')} `{last_updated}`",
         parse_mode='Markdown'
     )
 
 async def advanced_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(ADVANCED_TEXT, parse_mode='Markdown')
+    lang = get_user_language(update.effective_user.id)
+    await update.message.reply_text(t(lang, "advanced_text"), parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     city = update.message.text.strip()
+    lang = get_user_language(user.id)
 
     if len(city) < 2 or len(city) > 60:
         return
@@ -617,26 +860,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = await fetch_weather(city)
 
     if not data or not data.get("current") or not data.get("forecast"):
-        await update.message.reply_text("❌ المدينة غير موجودة، أو تعذر جلب بيانات التوقعات حاليًا. حاول مرة اخرى.")
+        await update.message.reply_text(t(lang, "weather_not_found"))
         return
 
-    msg, temp, rain = format_current_weather(data)
+    msg, temp, rain = format_current_weather(data, lang)
 
     keyboard = [
-        [InlineKeyboardButton("📅 توقعات 3 أيام", callback_data=f"fc:{city}")],
-        [InlineKeyboardButton("⏰ طقس بالساعة", callback_data=f"hr:{city}")],
-        [InlineKeyboardButton("⭐ إضافة مفضلة", callback_data=f"addfav:{city}")],
+        [InlineKeyboardButton(t(lang, "btn_forecast_3"), callback_data=f"fc:{city}")],
+        [InlineKeyboardButton(t(lang, "btn_hourly"), callback_data=f"hr:{city}")],
+        [InlineKeyboardButton(t(lang, "btn_add_fav"), callback_data=f"addfav:{city}")],
     ]
 
-    await update.message.reply_text(
-        msg,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def hourly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_user_language(update.effective_user.id)
     if not context.args:
-        await update.message.reply_text("⚠️ استخدم: `/hourly الرياض`")
+        await update.message.reply_text(t(lang, "hourly_usage"))
         return
 
     city = ' '.join(context.args)
@@ -644,191 +884,186 @@ async def hourly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = await fetch_hourly(city)
 
     if data:
-        msg = format_hourly(data)
+        msg = format_hourly(data, lang)
         await update.message.reply_text(msg, parse_mode='Markdown')
     else:
-        await update.message.reply_text("❌ المدينة غير موجودة")
+        await update.message.reply_text(t(lang, "city_not_found"))
 
 async def add_fav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_user_language(update.effective_user.id)
     if not context.args:
-        await update.message.reply_text("⚠️ استخدم: `/addfav الرياض`")
+        await update.message.reply_text(t(lang, "addfav_usage"))
         return
 
     city = ' '.join(context.args)
     user_id = update.effective_user.id
 
     if add_favorite(user_id, city):
-        await update.message.reply_text(f"✅ تمت إضافة *{city}* للمفضلة", parse_mode='Markdown')
+        await update.message.reply_text(f"{t(lang, 'fav_added')} *{city}* {t(lang, 'fav_for')}", parse_mode='Markdown')
     else:
-        await update.message.reply_text(f"⭐ {city} موجودة مسبقاً في المفضلة")
+        await update.message.reply_text(f"⭐ {city} {t(lang, 'fav_exists')}")
 
 async def del_fav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_user_language(update.effective_user.id)
     if not context.args:
-        await update.message.reply_text("⚠️ استخدم: `/delfav الرياض`")
+        await update.message.reply_text(t(lang, "delfav_usage"))
         return
 
     city = ' '.join(context.args)
     user_id = update.effective_user.id
 
     if remove_favorite(user_id, city):
-        await update.message.reply_text(f"🗑️ تم حذف *{city}* من المفضلة", parse_mode='Markdown')
+        await update.message.reply_text(f"{t(lang, 'fav_removed')} *{city}* {t(lang, 'fav_from')}", parse_mode='Markdown')
     else:
-        await update.message.reply_text(f"❌ {city} غير موجودة في المفضلة")
+        await update.message.reply_text(f"❌ {city} {t(lang, 'fav_not_found')}")
 
 async def show_fav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_user_language(update.effective_user.id)
     user_id = update.effective_user.id
     favs = load_favorites_for_user(user_id)
 
     if not favs:
-        await update.message.reply_text("⭐ لا توجد مدن مفضلة\nاستخدم `/addfav المدينة` للإضافة")
+        await update.message.reply_text(t(lang, "fav_empty"))
         return
 
     keyboard = []
     for city in favs:
         keyboard.append([InlineKeyboardButton(f"🏙️ {city}", callback_data=f"city:{city}")])
 
-    await update.message.reply_text(
-        "⭐ *مدنك المفضلة:*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-
-async def compare_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-    await update.effective_message.reply_text(
-        "⚖️ *مقارنة مدينتين*\n\nأرسل اسم *المدينة الأولى:*",
-        parse_mode='Markdown'
-    )
-    return COMPARE_CITY1
-
-async def compare_city1(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['compare_city1'] = update.message.text.strip()
-    await update.message.reply_text("✅ الآن أرسل اسم *المدينة الثانية:*", parse_mode='Markdown')
-    return COMPARE_CITY2
-
-async def compare_city2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    city1 = context.user_data['compare_city1']
-    city2 = update.message.text.strip()
-
-    await update.message.chat.send_action('typing')
-    data1 = await fetch_weather(city1)
-    data2 = await fetch_weather(city2)
-
-    if data1 and data1.get("current") and data2 and data2.get("current"):
-        msg = format_compare(data1, data2)
-        await update.message.reply_text(msg, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("❌ إحدى المدينتين غير موجودة")
-
-    return ConversationHandler.END
+    await update.message.reply_text(t(lang, "fav_yours"), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    lang = get_user_language(query.from_user.id)
 
-    if data.startswith("fc:"):
-        city = data.split(":", 1)[1]
-        await query.edit_message_text("⏳ جاري جلب التوقعات...")
-        weather_data = await fetch_weather(city)
-        if weather_data and weather_data.get("forecast"):
-            msg = format_forecast(weather_data)
-            back = [[InlineKeyboardButton("🔙 الطقس الحالي", callback_data=f"now:{city}")]]
-            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(back), parse_mode='Markdown')
-        else:
-            await query.edit_message_text("❌ تعذر جلب التوقعات حاليًا، حاول لاحقًا")
+    if data.startswith("lang:"):
+        new_lang = data.split(":")[1]
+        user = query.from_user
+        is_new = save_user_data(user.id, user.username, user.first_name, user.last_name, new_lang)
+        set_user_language(user.id, new_lang)
+        update_stats("start")
+        update_stats("user")
+        if is_new:
+            await notify_channel_new_user(context, user, new_lang)
+        await query.edit_message_text(t(new_lang, "language_set"))
+        await query.message.delete()
+        await show_welcome(update, new_lang)
+        return
 
-    elif data.startswith("now:"):
-        city = data.split(":", 1)[1]
-        weather_data = await fetch_weather(city)
-        if weather_data and weather_data.get("current") and weather_data.get("forecast"):
-            msg, _, _ = format_current_weather(weather_data)
-            keyboard = [
-                [InlineKeyboardButton("📅 توقعات 3 أيام", callback_data=f"fc:{city}")],
-                [InlineKeyboardButton("⏰ طقس بالساعة", callback_data=f"hr:{city}")],
-            ]
-            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        else:
-            await query.edit_message_text("❌ بيانات المدينة غير متوفرة حالياً")
+    if data == "change_lang":
+        text = f"{t('ar', 'choose_language')}\n{t('en', 'choose_language')}\n{t('fa', 'choose_language')}"
+        await query.edit_message_text(text, reply_markup=get_language_keyboard())
+        return
 
-    elif data.startswith("hr:"):
-        city = data.split(":", 1)[1]
-        await query.edit_message_text("⏳ جاري جلب توقعات الساعات...")
-        weather_data = await fetch_hourly(city)
-        if weather_data:
-            msg = format_hourly(weather_data)
-            back = [[InlineKeyboardButton("🔙 الطقس الحالي", callback_data=f"now:{city}")]]
-            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(back), parse_mode='Markdown')
-        else:
-            await query.edit_message_text("❌ تعذر جلب توقعات الساعات حاليًا")
-
-    elif data.startswith("addfav:"):
-        city = data.split(":", 1)[1]
-        user_id = query.from_user.id
-        if add_favorite(user_id, city):
-            await query.answer(f"✅ تمت إضافة {city} للمفضلة")
-        else:
-            await query.answer(f"⭐ {city} موجودة مسبقاً")
-
-    elif data == "fav_list":
+    if data == "fav_list":
         user_id = query.from_user.id
         favs = load_favorites_for_user(user_id)
         if not favs:
-            await query.edit_message_text("⭐ لا توجد مدن مفضلة", parse_mode='Markdown')
+            await query.edit_message_text(t(lang, "fav_empty"), parse_mode='Markdown')
         else:
             keyboard = []
             for city in favs:
                 keyboard.append([InlineKeyboardButton(f"🏙️ {city}", callback_data=f"city:{city}")])
-            keyboard.append([InlineKeyboardButton("🔙 الرئيسية", callback_data="menu")])
-            await query.edit_message_text("⭐ *مدنك المفضلة:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            keyboard.append([InlineKeyboardButton(t(lang, "btn_back_main"), callback_data="menu")])
+            await query.edit_message_text(t(lang, "fav_yours"), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return
 
-    elif data == "advanced":
-        await query.edit_message_text(ADVANCED_TEXT, parse_mode='Markdown')
+    if data == "advanced":
+        await query.edit_message_text(t(lang, "advanced_text"), parse_mode='Markdown')
+        return
 
-    elif data in ["sa", "arab", "world", "yemen"]:
-        groups = {
-            "sa": ("🇸🇦 السعودية", ["الرياض", "جدة", "مكة", "المدينة", "الدمام", "أبها", "تبوك", "بريدة", "حائل", "نجران", "الطائف", "ينبع"]),
-            "arab": ("🌍 عربية", ["القاهرة", "الإسكندرية", "دبي", "أبوظبي", "الدوحة", "مسقط", "الكويت", "بغداد", "عمّان", "بيروت", "الخرطوم", "تونس"]),
-            "world": ("🌎 عالمية", ["لندن", "باريس", "نيويورك", "طوكيو", "برلين", "روما", "مدريد", "موسكو", "إسطنبول", "كوالالمبور", "جاكرتا", "سيدني"]),
-            "yemen": ("🇾🇪 اليمن", ["صنعاء", "عدن", "تعز", "الحديدة", "إب", "المكلا", "ذمار", "عمران", "صعدة", "البيضاء", "مأرب", "سيئون"])
-        }
-        title, cities = groups[data]
-        keyboard = []
-        row = []
-        for i, city in enumerate(cities):
-            row.append(InlineKeyboardButton(city, callback_data=f"city:{city}"))
-            if (i + 1) % 2 == 0:
-                keyboard.append(row)
-                row = []
-        if row: keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("🔙 الرئيسية", callback_data="menu")])
-        await query.edit_message_text(f"*{title}*\nاختر مدينة:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-    elif data.startswith("city:"):
+    if data.startswith("fc:"):
         city = data.split(":", 1)[1]
-        await query.edit_message_text(f"⏳ جاري جلب طقس *{city}*...", parse_mode='Markdown')
+        await query.edit_message_text(t(lang, "fetching_forecast"))
+        weather_data = await fetch_weather(city)
+        if weather_data and weather_data.get("forecast"):
+            msg = format_forecast(weather_data, lang)
+            back = [[InlineKeyboardButton(t(lang, "btn_back_current"), callback_data=f"now:{city}")]]
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(back), parse_mode='Markdown')
+        else:
+            await query.edit_message_text(t(lang, "forecast_not_available"))
+        return
+
+    if data.startswith("now:"):
+        city = data.split(":", 1)[1]
         weather_data = await fetch_weather(city)
         if weather_data and weather_data.get("current") and weather_data.get("forecast"):
-            msg, _, _ = format_current_weather(weather_data)
+            msg, _, _ = format_current_weather(weather_data, lang)
             keyboard = [
-                [InlineKeyboardButton("📅 توقعات 3 أيام", callback_data=f"fc:{city}")],
-                [InlineKeyboardButton("⏰ طقس بالساعة", callback_data=f"hr:{city}")],
+                [InlineKeyboardButton(t(lang, "btn_forecast_3"), callback_data=f"fc:{city}")],
+                [InlineKeyboardButton(t(lang, "btn_hourly"), callback_data=f"hr:{city}")],
             ]
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         else:
-            await query.edit_message_text("❌ بيانات المدينة غير متوفرة حالياً")
+            await query.edit_message_text(t(lang, "city_not_available"))
+        return
 
-    elif data == "menu":
-        keyboard = [
-            [InlineKeyboardButton("🇸🇦 السعودية", callback_data="sa"), InlineKeyboardButton("🇾🇪 اليمن", callback_data="yemen")],
-            [InlineKeyboardButton("🌍 عربية", callback_data="arab"), InlineKeyboardButton("🌎 عالمية", callback_data="world")],
-            [InlineKeyboardButton("⭐ المفضلة", callback_data="fav_list")],
-        ]
-        await query.edit_message_text("🏠 *القائمة الرئيسية*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    if data.startswith("hr:"):
+        city = data.split(":", 1)[1]
+        await query.edit_message_text(t(lang, "fetching_hourly"))
+        weather_data = await fetch_hourly(city)
+        if weather_data:
+            msg = format_hourly(weather_data, lang)
+            back = [[InlineKeyboardButton(t(lang, "btn_back_current"), callback_data=f"now:{city}")]]
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(back), parse_mode='Markdown')
+        else:
+            await query.edit_message_text(t(lang, "hourly_not_available"))
+        return
+
+    if data.startswith("addfav:"):
+        city = data.split(":", 1)[1]
+        user_id = query.from_user.id
+        if add_favorite(user_id, city):
+            await query.answer(f"{t(lang, 'fav_added')} {city} {t(lang, 'fav_for')}")
+        else:
+            await query.answer(f"⭐ {city} {t(lang, 'fav_exists')}")
+        return
+
+    if data == "arab":
+        keyboard = build_city_keyboard(ARAB_CITIES)
+        keyboard.append([InlineKeyboardButton(t(lang, "btn_back_main"), callback_data="menu")])
+        await query.edit_message_text(f"*{t(lang, 'btn_arab')}*\n{t(lang, 'choose_city')}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return
+
+    if data == "world":
+        keyboard = build_city_keyboard(WORLD_CITIES)
+        keyboard.append([InlineKeyboardButton(t(lang, "btn_back_main"), callback_data="menu")])
+        await query.edit_message_text(f"*{t(lang, 'btn_world')}*\n{t(lang, 'choose_city')}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return
+
+    if data.startswith("city:"):
+        city = data.split(":", 1)[1]
+        await query.edit_message_text(f"{t(lang, 'fetching_weather')} *{city}*...", parse_mode='Markdown')
+        weather_data = await fetch_weather(city)
+        if weather_data and weather_data.get("current") and weather_data.get("forecast"):
+            msg, _, _ = format_current_weather(weather_data, lang)
+            keyboard = [
+                [InlineKeyboardButton(t(lang, "btn_forecast_3"), callback_data=f"fc:{city}")],
+                [InlineKeyboardButton(t(lang, "btn_hourly"), callback_data=f"hr:{city}")],
+            ]
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        else:
+            await query.edit_message_text(t(lang, "city_not_available"))
+        return
+
+    if data == "menu":
+        await show_welcome(update, lang)
+        return
+
+def build_city_keyboard(cities):
+    keyboard = []
+    row = []
+    for i, city in enumerate(cities):
+        row.append(InlineKeyboardButton(city, callback_data=f"city:{city}"))
+        if (i + 1) % 2 == 0:
+            keyboard.append(row)
+            row = []
+    if row: keyboard.append(row)
+    return keyboard
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """معالج اخطاء عام: يمنع انهيار البوت بصمت، ويُبلغ المستخدم برسالة واضحة"""
     print(f"⚠️ حدث خطأ غير متوقع: {context.error}")
     try:
         if isinstance(update, Update) and update.effective_message:
@@ -840,28 +1075,19 @@ def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
 
-    compare_conv = ConversationHandler(
-        entry_points=[CommandHandler("compare", compare_start), CallbackQueryHandler(compare_start, pattern="^compare_start$")],
-        states={
-            COMPARE_CITY1: [MessageHandler(filters.TEXT & ~filters.COMMAND, compare_city1)],
-            COMPARE_CITY2: [MessageHandler(filters.TEXT & ~filters.COMMAND, compare_city2)],
-        },
-        fallbacks=[CommandHandler("start", start)],
-    )
-
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("language", language_command))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("hourly", hourly_cmd))
     app.add_handler(CommandHandler("addfav", add_fav))
     app.add_handler(CommandHandler("delfav", del_fav))
     app.add_handler(CommandHandler("fav", show_fav))
     app.add_handler(CommandHandler("help", advanced_commands))
-    app.add_handler(compare_conv)
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    print("✅ البوت يعمل...")
+    print("✅ البوت يعمل بـ 3 لغات (عربي - English - فارسی)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
