@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import pytz
 
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8244290417:AAFyZ2lK7fMEOxvW5wv98HfK8M8gRnUKyo4")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8698756891:AAFNuiFzRowQbiU8NwHwDhj-RXkwIODEI4k")
 API_KEY = os.getenv("API_KEY", "70db0e7c65784b59b8d24440260207")
 BASE_URL = "https://api.weatherapi.com/v1"
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003554303588")
